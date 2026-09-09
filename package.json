@@ -17,6 +17,7 @@
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.57.4",
+    "@vimeo/player": "^2.30.4",
     "exceljs": "^4.4.0",
     "lucide-react": "^1.28.0",
     "react": "^19.2.8",

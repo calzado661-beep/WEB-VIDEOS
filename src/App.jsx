@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
+import VimeoPlayer from '@vimeo/player'
 import {
   ArrowLeft,
   ArrowRight,
@@ -961,9 +962,15 @@ function AdminApp({
 
   // Requiere presionar "Continuar" en vez de autoocultarse: el aviso debe
   // confirmarse a propósito, no perderse de un vistazo.
-  const notify = useCallback((message, { tone = 'success' } = {}) => {
-    setToast({ id: Date.now(), message, tone })
+  const notify = useCallback((message, { tone = 'success', onConfirm } = {}) => {
+    setToast({ id: Date.now(), message, tone, onConfirm })
   }, [])
+
+  const dismissToast = () => {
+    const onConfirm = toast?.onConfirm
+    setToast(null)
+    onConfirm?.()
+  }
 
   const navigate = (nextPage) => {
     setPage(nextPage)
@@ -997,7 +1004,7 @@ function AdminApp({
 
   return (
     <div className={`app-layout ${sidebarCollapsed ? 'app-layout--sidebar-collapsed' : ''} ${loggingOut ? 'app-layout--busy' : ''}`}>
-      <AdminToast toast={toast} onDismiss={() => setToast(null)} />
+      <AdminToast toast={toast} onDismiss={dismissToast} />
       {loggingOut && <div className="app-saving-overlay"><span className="loading-spinner" /><strong>Guardando y cerrando sesión…</strong></div>}
       <button className={`mobile-overlay ${menuOpen ? 'is-visible' : ''}`} onClick={() => setMenuOpen(false)} aria-label="Cerrar menú" />
       <aside className={`sidebar admin-sidebar ${sidebarCollapsed && !menuOpen ? 'sidebar--collapsed' : ''} ${menuOpen ? 'is-open' : ''}`}>
@@ -1056,7 +1063,7 @@ function AdminApp({
           </div>
           {page === 'overview' && <AdminOverview data={data} onNavigate={navigate} />}
           {page === 'sections' && <SectionsManager data={data} setData={setData} onRemove={removeSection} onNotify={notify} />}
-          {page === 'videos' && <VideosManager data={data} setData={setData} persistedVideoIdsRef={persistedVideoIdsRef} onNotify={notify} />}
+          {page === 'videos' && <VideosManager data={data} setData={setData} saveState={saveState} persistedVideoIdsRef={persistedVideoIdsRef} onNotify={notify} />}
           {page === 'settings' && <SettingsManager data={data} setData={setData} />}
           {page === 'users' && <UsersManager onCreateUser={onCreateUser} onUpdateUser={onUpdateUser} onNotify={notify} />}
           {page === 'progress' && <ProgressManager data={data} />}
@@ -1285,17 +1292,21 @@ const emptyVideoDraft = {
   bossLocked: false,
 }
 
-function VideosManager({ data, setData, persistedVideoIdsRef, onNotify }) {
+function VideosManager({ data, setData, saveState, persistedVideoIdsRef, onNotify }) {
   const [formOpen, setFormOpen] = useState(false)
   const [editingId, setEditingId] = useState(null)
+  const [newVideoId, setNewVideoId] = useState(null)
   const [draft, setDraft] = useState(emptyVideoDraft)
   const [error, setError] = useState('')
   const [query, setQuery] = useState('')
+  const [combinedSave, setCombinedSave] = useState(null)
+  const quizEditorRef = useRef(null)
 
   const sectionsFor = (role) => [...data.sections].filter((section) => section.roles.includes(role)).sort((a, b) => a.order - b.order)
 
   const openNew = () => {
     setEditingId(null)
+    setNewVideoId(crypto.randomUUID())
     setError('')
     setDraft({ ...emptyVideoDraft, operatorSection: sectionsFor('operator')[0]?.id || '', bossSection: sectionsFor('boss')[0]?.id || '' })
     setFormOpen(true)
@@ -1303,6 +1314,7 @@ function VideosManager({ data, setData, persistedVideoIdsRef, onNotify }) {
 
   const openEdit = (video) => {
     setEditingId(video.id)
+    setNewVideoId(null)
     setError('')
     setDraft({
       title: video.title,
@@ -1321,6 +1333,13 @@ function VideosManager({ data, setData, persistedVideoIdsRef, onNotify }) {
     setFormOpen(true)
     window.scrollTo({ top: 0, behavior: 'smooth' })
   }
+
+  const closeForm = useCallback(() => {
+    setFormOpen(false)
+    setEditingId(null)
+    setNewVideoId(null)
+    setCombinedSave(null)
+  }, [])
 
   const saveVideo = (event) => {
     event.preventDefault()
@@ -1349,19 +1368,54 @@ function VideosManager({ data, setData, persistedVideoIdsRef, onNotify }) {
       assignments,
       locked,
     }
+    if (!quizEditorRef.current?.validate()) return
+    const videoId = editingId || newVideoId
+    if (!videoId) return
+    const currentVideo = editingId ? data.videos.find((video) => video.id === editingId) : null
+    const videoChanged = !currentVideo || JSON.stringify({
+      title: currentVideo.title,
+      description: currentVideo.description,
+      url: currentVideo.url,
+      thumbnailUrl: currentVideo.thumbnailUrl || '',
+      duration: currentVideo.duration,
+      featured: Boolean(currentVideo.featured),
+      assignments: currentVideo.assignments,
+      locked: currentVideo.locked || {},
+    }) !== JSON.stringify(payload)
     if (editingId) {
       setData((current) => ({ ...current, videos: current.videos.map((video) => video.id === editingId ? { ...video, ...payload } : video) }))
-      onNotify?.('Video actualizado correctamente')
     } else {
-      // Al crear, se queda en modo edición del video recién agregado (en vez
-      // de cerrar el formulario) para que se pueda seguir directo con su
-      // cuestionario, sin tener que volver a abrir "Editar" a mano.
-      const newId = crypto.randomUUID()
-      setData((current) => ({ ...current, videos: [{ ...payload, id: newId, createdAt: new Date().toISOString() }, ...current.videos] }))
-      setEditingId(newId)
-      onNotify?.('Video creado correctamente')
+      setData((current) => ({ ...current, videos: [{ ...payload, id: videoId, createdAt: new Date().toISOString() }, ...current.videos] }))
     }
+    setCombinedSave({ videoId, editing: Boolean(editingId), sawPersistence: !videoChanged, finishing: false })
   }
+
+  useEffect(() => {
+    if (!combinedSave) return
+    if (saveState.status === 'pending' || saveState.status === 'saving') {
+      if (!combinedSave.sawPersistence) setCombinedSave((current) => current ? { ...current, sawPersistence: true } : current)
+      return
+    }
+    if (saveState.status === 'error') {
+      setError(saveState.error || 'No se pudo guardar el video.')
+      setCombinedSave(null)
+      return
+    }
+    if (saveState.status !== 'saved' || !combinedSave.sawPersistence || combinedSave.finishing || !persistedVideoIdsRef.current.has(combinedSave.videoId)) return
+
+    setCombinedSave((current) => current ? { ...current, finishing: true } : current)
+    const finishSave = async () => {
+      const quizSaved = await quizEditorRef.current?.save()
+      if (!quizSaved) {
+        setCombinedSave(null)
+        return
+      }
+      const message = combinedSave.editing ? 'Video y cuestionario actualizados correctamente' : 'Video y cuestionario guardados correctamente'
+      setCombinedSave(null)
+      onNotify?.(message, { onConfirm: closeForm })
+    }
+    finishSave()
+  }, [closeForm, combinedSave, onNotify, persistedVideoIdsRef, saveState])
 
   const deleteVideo = (id) => {
     const videoTitle = data.videos.find((video) => video.id === id)?.title || 'este video'
@@ -1385,7 +1439,7 @@ function VideosManager({ data, setData, persistedVideoIdsRef, onNotify }) {
       {formOpen && (
         <section className="panel video-form-panel">
           <div className="manager-toolbar"><div><span className="eyebrow eyebrow--plain">{editingId ? 'EDITAR CONTENIDO' : 'NUEVO CONTENIDO'}</span><h2>{editingId ? 'Actualizar video' : 'Agregar un video'}</h2></div><button className="icon-button" onClick={() => setFormOpen(false)}><X size={19} /></button></div>
-          <form className="video-form" onSubmit={saveVideo}>
+          <form id="video-editor-form" className="video-form" onSubmit={saveVideo}>
             <div className="video-form__main">
               <div className="form-group"><label>Título del video</label><input value={draft.title} onChange={(event) => setDraft({ ...draft, title: event.target.value })} placeholder="Ej. Procedimiento de apertura" maxLength="180" /></div>
               <div className="form-group"><label>Descripción</label><textarea value={draft.description} onChange={(event) => setDraft({ ...draft, description: event.target.value })} placeholder="Explica brevemente qué aprenderá la persona…" rows="4" /></div>
@@ -1412,13 +1466,17 @@ function VideosManager({ data, setData, persistedVideoIdsRef, onNotify }) {
               })}
             </div>
             {error && <p className="form-error form-error--box">{error}</p>}
-            <div className="form-actions"><button type="button" className="secondary-button" onClick={() => setFormOpen(false)}>Cancelar</button><button className="primary-button" type="submit"><Check size={17} /> {editingId ? 'Guardar cambios' : 'Publicar video'}</button></div>
           </form>
-          {editingId && (
+          {(editingId || newVideoId) && (
             <div className="quiz-panel-wrap">
-              <VideoQuizEditor videoId={editingId} videoPending={!persistedVideoIdsRef.current.has(editingId)} />
+              <VideoQuizEditor ref={quizEditorRef} videoId={editingId || newVideoId} videoPending={!persistedVideoIdsRef.current.has(editingId || newVideoId)} hideSaveAction />
             </div>
           )}
+          <div className="video-save-floating">
+            <button className="primary-button" type="submit" form="video-editor-form" disabled={Boolean(combinedSave)}>
+              <Check size={18} /> {combinedSave ? 'Guardando video y cuestionario…' : editingId ? 'Guardar video y cuestionario' : 'Publicar video y cuestionario'}
+            </button>
+          </div>
         </section>
       )}
 
@@ -1456,7 +1514,7 @@ function emptyQuizQuestion() {
   }
 }
 
-function VideoQuizEditor({ videoId, videoPending }) {
+const VideoQuizEditor = forwardRef(function VideoQuizEditor({ videoId, videoPending, hideSaveAction = false }, ref) {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [saving, setSaving] = useState(false)
@@ -1522,30 +1580,42 @@ function VideoQuizEditor({ videoId, videoPending }) {
     return { ...question, options }
   }))
 
-  const save = async () => {
+  const validate = () => {
     setError('')
-    if (videoPending) { setError('Espera a que el video termine de guardarse antes de agregar su cuestionario.'); return }
-    if (!questions.length) { setError('Agrega al menos una pregunta.'); return }
+    if (loading) { setError('Espera a que termine de cargar el cuestionario.'); return false }
+    // El cuestionario es opcional: un formulario vacío guarda solamente el video.
+    if (!questions.length) return true
     for (const question of questions) {
-      if (!question.prompt.trim()) { setError('Cada pregunta necesita un enunciado.'); return }
+      if (!question.prompt.trim()) { setError('Cada pregunta necesita un enunciado.'); return false }
       if (question.options.length < 2 || question.options.some((option) => !option.label.trim())) {
         setError('Cada pregunta necesita al menos 2 opciones con texto.')
-        return
+        return false
       }
-      if (!question.options.some((option) => option.isCorrect)) { setError('Marca la respuesta correcta de cada pregunta.'); return }
+      if (!question.options.some((option) => option.isCorrect)) { setError('Marca la respuesta correcta de cada pregunta.'); return false }
     }
+    return true
+  }
+
+  const save = async () => {
+    if (!validate()) return false
+    if (videoPending) { setError('Espera a que el video termine de guardarse antes de agregar su cuestionario.'); return false }
+    if (!questions.length) return true
     setSaving(true)
     try {
       await saveVideoQuiz(videoId, { passingScorePercent, questions })
       setHasQuiz(true)
       setSavedNote('Cuestionario guardado.')
       window.setTimeout(() => setSavedNote(''), 2500)
+      return true
     } catch (saveError) {
       setError(getErrorMessage(saveError, 'No se pudo guardar el cuestionario.'))
+      return false
     } finally {
       setSaving(false)
     }
   }
+
+  useImperativeHandle(ref, () => ({ save, validate }))
 
   const remove = async () => {
     if (!window.confirm('¿Eliminar el cuestionario de este video?')) return
@@ -1602,7 +1672,7 @@ function VideoQuizEditor({ videoId, videoPending }) {
       {error && <p className="form-error">{error}</p>}
       {savedNote && <p className="quiz-saved-note">{savedNote}</p>}
 
-      <div className="form-actions">
+      {!hideSaveAction && <div className="form-actions">
         <button
           type="button"
           className="primary-button"
@@ -1612,10 +1682,10 @@ function VideoQuizEditor({ videoId, videoPending }) {
         >
           {saving ? 'Guardando…' : videoPending ? 'Esperando al video…' : 'Guardar cuestionario'}
         </button>
-      </div>
+      </div>}
     </div>
   )
-}
+})
 
 function AdminVideoCard({ video, data, onEdit, onDelete }) {
   const source = getPersistedVideoSource(video)
@@ -2330,11 +2400,14 @@ function RolePreview({ data }) {
 }
 
 function ViewerApp({ role, userId, data, theme, toggleTheme, onLogout }) {
+  const [completedVideoIds, setCompletedVideoIds] = useState(() => new Set())
   const sections = useMemo(() => [...data.sections].filter((section) => section.roles.includes(role)).sort((a, b) => a.order - b.order), [data.sections, role])
   const targetedVideos = useMemo(() => {
     const visibleSectionIds = new Set(sections.map((section) => section.id))
-    return data.videos.filter((video) => visibleSectionIds.has(video.assignments[role]))
-  }, [data.videos, role, sections])
+    return data.videos
+      .filter((video) => visibleSectionIds.has(video.assignments[role]))
+      .map((video) => completedVideoIds.has(video.id) && !video.watched ? { ...video, watched: true } : video)
+  }, [completedVideoIds, data.videos, role, sections])
   const playableVideos = useMemo(() => targetedVideos.filter((video) => !isVideoLockedFor(video, role)), [role, targetedVideos])
   const [activeSection, setActiveSection] = useState('home')
   const [selectedVideo, setSelectedVideo] = useState(null)
@@ -2356,6 +2429,15 @@ function ViewerApp({ role, userId, data, theme, toggleTheme, onLogout }) {
     if (!video || isVideoLockedFor(video, role)) return
     setSelectedVideo(video)
   }
+
+  const markVideoCompleted = useCallback((videoId) => {
+    setCompletedVideoIds((current) => {
+      if (current.has(videoId)) return current
+      const next = new Set(current)
+      next.add(videoId)
+      return next
+    })
+  }, [])
 
   const navigate = (sectionId) => {
     setActiveSection(sectionId)
@@ -2407,7 +2489,7 @@ function ViewerApp({ role, userId, data, theme, toggleTheme, onLogout }) {
 
         <main className="content-area viewer-content">
           {selectedVideo ? (
-            <VideoPlayerPage video={selectedVideo} role={role} userId={userId} data={data} onBack={() => setSelectedVideo(null)} onPlay={openVideo} />
+            <VideoPlayerPage video={selectedVideo} role={role} userId={userId} data={data} onBack={() => setSelectedVideo(null)} onPlay={openVideo} onCompleted={markVideoCompleted} />
           ) : activeSection === 'home' && !query ? (
             <ViewerHome role={role} settings={data.settings} videos={targetedVideos} sections={sections} featured={featured} lockedCount={lockedCount} onPlay={openVideo} onSection={navigate} />
           ) : (
@@ -2480,7 +2562,10 @@ function ViewerVideoCard({ role, video, section, onPlay }) {
   )
 }
 
-const PROGRESS_REPORT_INTERVAL_SECONDS = 10
+// Un intervalo corto permite guardar avance incluso en clips de pocos segundos.
+const PROGRESS_REPORT_INTERVAL_SECONDS = 2
+const YOUTUBE_PROGRESS_POLL_MS = 250
+const PLAYBACK_END_TOLERANCE_SECONDS = 0.75
 
 let youTubeApiPromise = null
 
@@ -2501,7 +2586,11 @@ function loadYouTubeIframeApi() {
     const script = document.createElement('script')
     script.src = 'https://www.youtube.com/iframe_api'
     script.async = true
-    script.onerror = () => reject(new Error('No se pudo cargar el reproductor de YouTube'))
+    script.onerror = () => {
+      youTubeApiPromise = null
+      script.remove()
+      reject(new Error('No se pudo cargar el reproductor de YouTube'))
+    }
     document.head.appendChild(script)
   })
 
@@ -2516,6 +2605,12 @@ function VideoPlayerMedia({ source, title, video, userId, onCompleted }) {
   const maxProgressRef = useRef(0)
   const lastReportedRef = useRef(0)
   const completedNotifiedRef = useRef(false)
+  const completionReportedRef = useRef(false)
+  const iframeRef = useRef(null)
+  const youtubeContainerRef = useRef(null)
+  const coveredSecondsRef = useRef(new Set())
+  const lastPlaybackSampleRef = useRef(null)
+  const lastPlaybackSampleAtRef = useRef(null)
   // Duración real observada por el propio reproductor (metadata del <video>
   // nativo o player.getDuration() de YouTube). No es la duración que el admin
   // escribió al crear el video: esa es solo un texto opcional para mostrar en
@@ -2551,40 +2646,104 @@ function VideoPlayerMedia({ source, title, video, userId, onCompleted }) {
     })
   }, [userId, video?.id])
 
+  const capturePlaybackSample = useCallback((seconds, duration, playbackRate = 1) => {
+    if (!Number.isFinite(seconds) || seconds < 0) return coveredSecondsRef.current.size
+    const now = performance.now()
+    const previous = lastPlaybackSampleRef.current
+    const elapsed = lastPlaybackSampleAtRef.current === null ? 0 : (now - lastPlaybackSampleAtRef.current) / 1000
+    const delta = previous === null ? 0 : seconds - previous
+    const rate = Number.isFinite(playbackRate) && playbackRate > 0 ? playbackRate : 1
+    const continuous = previous === null || (delta >= -0.15 && delta <= (Math.max(0, elapsed) * rate) + 0.8)
+    const start = Math.floor(continuous && previous !== null ? Math.min(previous, seconds) : seconds)
+    const end = Math.floor(seconds)
+    for (let second = start; second <= end; second += 1) {
+      if (!Number.isFinite(duration) || second < duration) coveredSecondsRef.current.add(second)
+    }
+    lastPlaybackSampleRef.current = seconds
+    lastPlaybackSampleAtRef.current = now
+    return coveredSecondsRef.current.size
+  }, [])
+
+  const resetPlaybackSample = useCallback(() => {
+    lastPlaybackSampleRef.current = null
+    lastPlaybackSampleAtRef.current = null
+  }, [])
+
+  const hasFullPlaybackCoverage = useCallback((duration) => {
+    if (!Number.isFinite(duration) || duration <= 0) return false
+    for (let second = 0; second < Math.max(1, Math.floor(duration)); second += 1) {
+      if (!coveredSecondsRef.current.has(second)) return false
+    }
+    return true
+  }, [])
+
   const trackMaxProgress = useCallback((seconds) => {
     if (seconds <= maxProgressRef.current) return
     maxProgressRef.current = seconds
-    const knownDuration = realDurationRef.current || labelDurationSecondsRef.current
-    if (knownDuration && seconds >= knownDuration) notifyCompleted()
-    if (seconds - lastReportedRef.current >= PROGRESS_REPORT_INTERVAL_SECONDS) {
-      reportProgress(seconds)
-    }
-  }, [reportProgress, notifyCompleted])
+  }, [])
 
   useEffect(() => {
     maxProgressRef.current = 0
     lastReportedRef.current = 0
     realDurationRef.current = null
     completedNotifiedRef.current = false
+    completionReportedRef.current = false
+    coveredSecondsRef.current = new Set()
+    resetPlaybackSample()
     labelDurationSecondsRef.current = parseDurationSeconds(video?.duration)
-    if (!userId || !video?.id || source.type !== 'iframe') return undefined
+    if (!video?.id || source.type !== 'iframe') return undefined
 
     if (source.provider === 'youtube') {
       let player = null
       let pollInterval = null
       let cancelled = false
+      const container = youtubeContainerRef.current
+      if (!container) return undefined
+      container.replaceChildren()
+      const youtubeIframe = document.createElement('iframe')
+      youtubeIframe.id = youtubeElementId
+      youtubeIframe.src = `${source.embedUrl}?enablejsapi=1&playsinline=1&origin=${encodeURIComponent(window.location.origin)}`
+      youtubeIframe.title = title
+      youtubeIframe.referrerPolicy = 'strict-origin-when-cross-origin'
+      youtubeIframe.allow = 'accelerometer; autoplay; encrypted-media; gyroscope; picture-in-picture; web-share'
+      youtubeIframe.allowFullscreen = true
+      container.appendChild(youtubeIframe)
 
       loadYouTubeIframeApi().then((YT) => {
         if (cancelled) return
-        player = new YT.Player(youtubeElementId, {
+        player = new YT.Player(youtubeIframe, {
           events: {
             onReady: () => {
               pollInterval = window.setInterval(() => {
                 const current = player?.getCurrentTime?.()
                 const duration = player?.getDuration?.()
-                if (Number.isFinite(duration) && duration > 0) realDurationRef.current = Math.round(duration)
-                if (Number.isFinite(current)) trackMaxProgress(Math.floor(current))
-              }, 1000)
+                if (Number.isFinite(duration) && duration > 0) realDurationRef.current = duration
+                if (Number.isFinite(current)) {
+                  trackMaxProgress(current)
+                  const playerState = player?.getPlayerState?.()
+                  const coveredSeconds = playerState === YT.PlayerState.PLAYING
+                    ? capturePlaybackSample(current, duration, player?.getPlaybackRate?.())
+                    : coveredSecondsRef.current.size
+                  if (playerState !== YT.PlayerState.PLAYING) resetPlaybackSample()
+                  if (coveredSeconds - lastReportedRef.current >= PROGRESS_REPORT_INTERVAL_SECONDS) reportProgress(coveredSeconds)
+                  // En clips muy cortos algunos navegadores desmontan o
+                  // cambian el iframe antes de que llegue el evento ENDED.
+                  // Estar reproduciendo dentro del último tramo confirma el
+                  // final usando la duración real informada por YouTube.
+                  if (
+                    !completionReportedRef.current
+                    && Number.isFinite(duration)
+                    && duration > 0
+                    && current >= duration - PLAYBACK_END_TOLERANCE_SECONDS
+                    && playerState === YT.PlayerState.PLAYING
+                    && hasFullPlaybackCoverage(duration)
+                  ) {
+                    completionReportedRef.current = true
+                    reportProgress(coveredSeconds, { ended: true })
+                    notifyCompleted()
+                  }
+                }
+              }, YOUTUBE_PROGRESS_POLL_MS)
             },
             onStateChange: (event) => {
               // ENDED = 0. No esperamos al siguiente sondeo ni al desmontaje:
@@ -2593,8 +2752,13 @@ function VideoPlayerMedia({ source, title, video, userId, onCompleted }) {
               if (event.data === YT.PlayerState.ENDED) {
                 const finalSeconds = Math.max(maxProgressRef.current, realDurationRef.current || 0)
                 maxProgressRef.current = finalSeconds
-                reportProgress(finalSeconds, { ended: true })
-                notifyCompleted()
+                if (!completionReportedRef.current && hasFullPlaybackCoverage(realDurationRef.current)) {
+                  completionReportedRef.current = true
+                  reportProgress(coveredSecondsRef.current.size, { ended: true })
+                  notifyCompleted()
+                } else if (!completionReportedRef.current) {
+                  reportProgress(coveredSecondsRef.current.size)
+                }
               }
             },
           },
@@ -2608,24 +2772,65 @@ function VideoPlayerMedia({ source, title, video, userId, onCompleted }) {
         cancelled = true
         if (pollInterval) window.clearInterval(pollInterval)
         player?.destroy?.()
-        if (maxProgressRef.current > lastReportedRef.current) reportProgress(maxProgressRef.current)
+        container.replaceChildren()
+        if (coveredSecondsRef.current.size > lastReportedRef.current) reportProgress(coveredSecondsRef.current.size)
       }
     }
 
-    // Google Drive, Vimeo y Loom no exponen ninguna API de progreso para su
-    // vista previa incrustada (ni oficial ni por postMessage), así que tampoco
-    // sabemos su duración real. Se aproxima el avance con el tiempo real que
-    // el reproductor permanece visible y la pestaña está activa.
+    if (source.provider === 'vimeo' && iframeRef.current) {
+      const player = new VimeoPlayer(iframeRef.current)
+      const handleVimeoTimeUpdate = ({ seconds, duration, percent }) => {
+        if (Number.isFinite(duration) && duration > 0) realDurationRef.current = duration
+        const coveredSeconds = Number.isFinite(seconds) ? capturePlaybackSample(seconds, duration) : coveredSecondsRef.current.size
+        if (Number.isFinite(seconds)) trackMaxProgress(seconds)
+        if (coveredSeconds - lastReportedRef.current >= PROGRESS_REPORT_INTERVAL_SECONDS) reportProgress(coveredSeconds)
+        // Vimeo documenta timeupdate aproximadamente cada 250 ms. El umbral
+        // cubre videos donde el último evento llega justo antes de percent=1.
+        if (!completionReportedRef.current && Number.isFinite(percent) && percent >= 0.995 && hasFullPlaybackCoverage(duration)) {
+          completionReportedRef.current = true
+          reportProgress(coveredSeconds, { ended: true })
+          notifyCompleted()
+        }
+      }
+      const handleVimeoEnded = ({ seconds, duration } = {}) => {
+        if (!completionReportedRef.current && hasFullPlaybackCoverage(duration || realDurationRef.current)) {
+          completionReportedRef.current = true
+          reportProgress(coveredSecondsRef.current.size, { ended: true })
+          notifyCompleted()
+        } else if (!completionReportedRef.current) {
+          reportProgress(coveredSecondsRef.current.size)
+        }
+      }
+      const handleVimeoSeeking = () => resetPlaybackSample()
+      player.on('timeupdate', handleVimeoTimeUpdate)
+      player.on('ended', handleVimeoEnded)
+      player.on('seeking', handleVimeoSeeking)
+
+      return () => {
+        player.off('timeupdate', handleVimeoTimeUpdate)
+        player.off('ended', handleVimeoEnded)
+        player.off('seeking', handleVimeoSeeking)
+        if (coveredSecondsRef.current.size > lastReportedRef.current) reportProgress(coveredSecondsRef.current.size)
+      }
+    }
+
+    // Google Drive y Loom no exponen una API de progreso equivalente para su
+    // vista previa incrustada. Se aproxima el avance con el tiempo real que el
+    // reproductor permanece visible y la pestaña está activa.
     const interval = window.setInterval(() => {
       if (document.visibilityState !== 'visible') return
-      trackMaxProgress(maxProgressRef.current + 1)
+      const nextProgress = maxProgressRef.current + 1
+      trackMaxProgress(nextProgress)
+      const knownDuration = labelDurationSecondsRef.current
+      if (knownDuration && nextProgress >= knownDuration) notifyCompleted()
+      if (nextProgress - lastReportedRef.current >= PROGRESS_REPORT_INTERVAL_SECONDS) reportProgress(nextProgress)
     }, 1000)
 
     return () => {
       window.clearInterval(interval)
-      if (maxProgressRef.current > lastReportedRef.current) reportProgress(maxProgressRef.current)
+        if (coveredSecondsRef.current.size > lastReportedRef.current) reportProgress(coveredSecondsRef.current.size)
     }
-  }, [video?.id, userId, source.type, source.provider, youtubeElementId, reportProgress, trackMaxProgress, notifyCompleted])
+  }, [video?.id, userId, source.type, source.provider, source.embedUrl, title, youtubeElementId, capturePlaybackSample, hasFullPlaybackCoverage, reportProgress, resetPlaybackSample, trackMaxProgress, notifyCompleted])
 
   const captureRealDuration = (element) => {
     if (Number.isFinite(element.duration) && element.duration > 0) {
@@ -2635,23 +2840,28 @@ function VideoPlayerMedia({ source, title, video, userId, onCompleted }) {
 
   const handleTimeUpdate = (event) => {
     captureRealDuration(event.currentTarget)
-    trackMaxProgress(Math.floor(event.currentTarget.currentTime))
+    const current = event.currentTarget.currentTime
+    trackMaxProgress(current)
+    const coveredSeconds = capturePlaybackSample(current, event.currentTarget.duration, event.currentTarget.playbackRate)
+    if (coveredSeconds - lastReportedRef.current >= PROGRESS_REPORT_INTERVAL_SECONDS) reportProgress(coveredSeconds)
   }
 
   const handlePause = (event) => {
     captureRealDuration(event.currentTarget)
-    if (maxProgressRef.current > lastReportedRef.current) reportProgress(maxProgressRef.current)
+    resetPlaybackSample()
+    if (coveredSecondsRef.current.size > lastReportedRef.current) reportProgress(coveredSecondsRef.current.size)
   }
 
   const handleEnded = (event) => {
     captureRealDuration(event.currentTarget)
-    reportProgress(Math.max(maxProgressRef.current, realDurationRef.current || maxProgressRef.current), { ended: true })
-    notifyCompleted()
+    const duration = realDurationRef.current || event.currentTarget.duration
+    if (hasFullPlaybackCoverage(duration)) {
+      reportProgress(coveredSecondsRef.current.size, { ended: true })
+      notifyCompleted()
+    } else {
+      reportProgress(coveredSecondsRef.current.size)
+    }
   }
-
-  const iframeSrc = source.provider === 'youtube' && typeof window !== 'undefined'
-    ? `${source.embedUrl}?enablejsapi=1&origin=${encodeURIComponent(window.location.origin)}`
-    : source.embedUrl
 
   return (
     <div className={frameClassName} data-player-mode={source.type}>
@@ -2662,13 +2872,16 @@ function VideoPlayerMedia({ source, title, video, userId, onCompleted }) {
           preload="metadata"
           playsInline
           onTimeUpdate={userId ? handleTimeUpdate : undefined}
+          onSeeking={userId ? resetPlaybackSample : undefined}
           onPause={userId ? handlePause : undefined}
           onEnded={userId ? handleEnded : undefined}
         />
+      ) : source.provider === 'youtube' ? (
+        <div ref={youtubeContainerRef} className="youtube-player-host" />
       ) : source.type === 'iframe' ? (
         <iframe
-          id={source.provider === 'youtube' ? youtubeElementId : undefined}
-          src={iframeSrc}
+          ref={iframeRef}
+          src={source.embedUrl}
           title={title}
           referrerPolicy="strict-origin-when-cross-origin"
           allow="accelerometer; autoplay; encrypted-media; gyroscope; picture-in-picture; web-share"
@@ -2681,7 +2894,7 @@ function VideoPlayerMedia({ source, title, video, userId, onCompleted }) {
   )
 }
 
-function VideoPlayerPage({ video, role, userId, data, onBack, onPlay }) {
+function VideoPlayerPage({ video, role, userId, data, onBack, onPlay, onCompleted }) {
   const [justCompleted, setJustCompleted] = useState(false)
   useEffect(() => { setJustCompleted(false) }, [video.id])
 
@@ -2700,7 +2913,7 @@ function VideoPlayerPage({ video, role, userId, data, onBack, onPlay }) {
       <button className="back-button" onClick={onBack}><ArrowLeft size={17} /> Volver a la biblioteca</button>
       <div className="player-layout">
         <div>
-          <VideoPlayerMedia source={source} title={video.title} video={video} userId={userId} onCompleted={() => setJustCompleted(true)} />
+          <VideoPlayerMedia key={video.id} source={source} title={video.title} video={video} userId={userId} onCompleted={() => { setJustCompleted(true); onCompleted?.(video.id) }} />
           <div className="player-copy">
             <div className="player-meta">
               <span>{section?.name || 'Video'}</span>
@@ -2735,6 +2948,7 @@ function PlayerQuiz({ video, userId, organizationId, requirePhoto, isWatched }) 
   const [quizLoadKey, setQuizLoadKey] = useState(0)
   const [cameraDevices, setCameraDevices] = useState([])
   const [selectedCameraId, setSelectedCameraId] = useState('')
+  const [cameraRetryKey, setCameraRetryKey] = useState(0)
   const cameraVideoRef = useRef(null)
   const cameraStreamRef = useRef(null)
 
@@ -2768,7 +2982,10 @@ function PlayerQuiz({ video, userId, organizationId, requirePhoto, isWatched }) 
     const constraints = selectedCameraId
       ? { video: { deviceId: { exact: selectedCameraId } }, audio: false }
       : { video: { facingMode: 'user' }, audio: false }
-    navigator.mediaDevices?.getUserMedia(constraints)
+    const cameraRequest = navigator.mediaDevices?.getUserMedia
+      ? navigator.mediaDevices.getUserMedia(constraints)
+      : Promise.reject(Object.assign(new Error('Cámara no disponible'), { name: 'NotSupportedError' }))
+    cameraRequest
       .then(async (stream) => {
         if (cancelled) { stream.getTracks().forEach((track) => track.stop()); return }
         cameraStreamRef.current = stream
@@ -2787,13 +3004,31 @@ function PlayerQuiz({ video, userId, organizationId, requirePhoto, isWatched }) 
           // Sin lista de dispositivos igual se puede seguir usando la cámara activa.
         }
       })
-      .catch(() => { if (!cancelled) setCameraError('No se pudo acceder a la cámara. Revisa los permisos del navegador e inténtalo de nuevo.') })
+      .catch((cameraAccessError) => {
+        if (cancelled) return
+        if (cameraAccessError?.name === 'NotAllowedError' || cameraAccessError?.name === 'SecurityError') {
+          setCameraError('El navegador bloqueó el permiso de cámara. Abre el candado junto a la dirección de esta página, permite la cámara y luego pulsa “Volver a conectar”.')
+        } else if (cameraAccessError?.name === 'NotFoundError' || cameraAccessError?.name === 'OverconstrainedError') {
+          setCameraError('No encontramos una cámara disponible. Conecta una cámara o elige otra y pulsa “Volver a conectar”.')
+        } else {
+          setCameraError('No se pudo iniciar la cámara. Comprueba que ninguna otra aplicación la esté usando y pulsa “Volver a conectar”.')
+        }
+      })
     return () => {
       cancelled = true
       cameraStreamRef.current?.getTracks().forEach((track) => track.stop())
       cameraStreamRef.current = null
     }
-  }, [phase, selectedCameraId])
+  }, [cameraRetryKey, phase, selectedCameraId])
+
+  const reconnectCamera = () => {
+    cameraStreamRef.current?.getTracks().forEach((track) => track.stop())
+    cameraStreamRef.current = null
+    if (cameraVideoRef.current) cameraVideoRef.current.srcObject = null
+    setCameraError('')
+    setSelectedCameraId('')
+    setCameraRetryKey((key) => key + 1)
+  }
 
   const startQuiz = () => {
     setError('')
@@ -2888,7 +3123,13 @@ function PlayerQuiz({ video, userId, organizationId, requirePhoto, isWatched }) 
       {phase === 'camera' && (
         <div className="player-quiz__camera">
           <p>Tómate una foto para comenzar el cuestionario.</p>
-          {cameraError && <p className="form-error">{cameraError}</p>}
+          {cameraError && (
+            <div className="camera-reconnect-notice" role="alert">
+              <CircleAlert size={18} />
+              <div><strong>No pudimos conectar la cámara</strong><p>{cameraError}</p></div>
+              <button className="secondary-button" type="button" onClick={reconnectCamera}><Camera size={15} /> Volver a conectar</button>
+            </div>
+          )}
           {cameraDevices.length > 1 && (
             <div className="form-group player-quiz__camera-select">
               <label>Cámara</label>
