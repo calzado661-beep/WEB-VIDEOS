@@ -20,6 +20,13 @@ const CREATE_USER_FUNCTION_URL = '/.netlify/functions/create-user'
 const UPDATE_USER_FUNCTION_URL = '/.netlify/functions/update-user'
 const SAVE_SNAPSHOT_FUNCTION_URL = '/.netlify/functions/save-admin-snapshot'
 const IMPORT_DRIVE_VIDEOS_FUNCTION_URL = '/.netlify/functions/import-drive-videos'
+const DOCUMENTS_BUCKET = 'document-assets'
+const DOCUMENT_MAX_BYTES = 25 * 1024 * 1024
+const DOCUMENT_MIME_TYPES = new Map([
+  ['pdf', 'application/pdf'],
+  ['doc', 'application/msword'],
+  ['docx', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'],
+])
 
 export class VideoHubApiError extends Error {
   constructor(message, { code = '', details = '', cause } = {}) {
@@ -106,6 +113,30 @@ function mapSettings(row) {
     allowLightMode: row.allow_light_mode,
     requireQuizPhoto: Boolean(row.require_quiz_photo),
   }
+}
+
+function mapDocumentRow(row) {
+  return {
+    id: row.id,
+    organizationId: row.organization_id,
+    sectionId: row.section_id,
+    title: row.title,
+    fileName: row.file_name,
+    mimeType: row.mime_type,
+    fileSize: Number(row.file_size) || 0,
+    storageBucket: row.storage_bucket,
+    storageObjectPath: row.storage_object_path,
+    order: row.sort_order || 0,
+    createdAt: row.created_at,
+  }
+}
+
+function resolveDocumentMimeType(file) {
+  const extension = String(file?.name || '').split('.').pop()?.toLowerCase() || ''
+  const expectedMimeType = DOCUMENT_MIME_TYPES.get(extension)
+  if (!expectedMimeType) return ''
+  if (!file.type || file.type === 'application/octet-stream') return expectedMimeType
+  return file.type === expectedMimeType ? expectedMimeType : ''
 }
 
 async function requestFunction(url, { body, accessToken } = {}) {
@@ -563,6 +594,138 @@ export async function getCurrentAccessContext() {
   }
 }
 
+export async function setSectionContentType({ sectionId, organizationId, contentType }) {
+  if (!isUuid(sectionId) || !isUuid(organizationId) || !['videos', 'documents'].includes(contentType)) {
+    throw new VideoHubApiError('No se pudo cambiar el tipo de contenido de la sección.', {
+      code: 'INVALID_SECTION_CONTENT_TYPE',
+    })
+  }
+  const { data, error } = await getClient()
+    .from('section_content_settings')
+    .upsert({
+      section_id: sectionId,
+      organization_id: organizationId,
+      content_type: contentType,
+    }, { onConflict: 'section_id' })
+    .select('content_type')
+    .single()
+  if (error?.message?.includes('SECTION_HAS_DOCUMENTS')) {
+    throw new VideoHubApiError('Elimina primero los documentos de esta sección.', {
+      code: 'SECTION_HAS_DOCUMENTS',
+      cause: error,
+    })
+  }
+  throwDatabaseError(error, 'No se pudo actualizar la sección')
+  if (data?.content_type !== contentType) {
+    throw new VideoHubApiError('Supabase no confirmó el cambio de la sección.', {
+      code: 'SECTION_CONTENT_NOT_CONFIRMED',
+    })
+  }
+  return data.content_type
+}
+
+export async function uploadSectionDocument({ organizationId, sectionId, title, file }) {
+  const normalizedTitle = String(title || '').trim()
+  const mimeType = resolveDocumentMimeType(file)
+  if (!isUuid(organizationId) || !isUuid(sectionId) || !normalizedTitle) {
+    throw new VideoHubApiError('Completa el título y la sección del documento.', {
+      code: 'INVALID_DOCUMENT',
+    })
+  }
+  if (!file || !mimeType) {
+    throw new VideoHubApiError('Selecciona un archivo PDF, DOC o DOCX válido.', {
+      code: 'INVALID_DOCUMENT_FILE',
+    })
+  }
+  if (file.size <= 0 || file.size > DOCUMENT_MAX_BYTES) {
+    throw new VideoHubApiError('El documento debe pesar como máximo 25 MB.', {
+      code: 'DOCUMENT_TOO_LARGE',
+    })
+  }
+
+  const id = createUuid()
+  const safeFileName = String(file.name || 'documento')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-zA-Z0-9._-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(-180) || 'documento'
+  const storageObjectPath = `${organizationId}/${sectionId}/${id}/${safeFileName}`
+  const client = getClient()
+  const { error: uploadError } = await client.storage
+    .from(DOCUMENTS_BUCKET)
+    .upload(storageObjectPath, file, { contentType: mimeType, upsert: false })
+  throwDatabaseError(uploadError, 'No se pudo subir el documento')
+
+  const { data, error } = await client
+    .from('section_documents')
+    .insert({
+      id,
+      organization_id: organizationId,
+      section_id: sectionId,
+      title: normalizedTitle,
+      file_name: file.name,
+      mime_type: mimeType,
+      file_size: file.size,
+      storage_bucket: DOCUMENTS_BUCKET,
+      storage_object_path: storageObjectPath,
+    })
+    .select('id,organization_id,section_id,title,file_name,mime_type,file_size,storage_bucket,storage_object_path,sort_order,created_at')
+    .single()
+
+  if (error) {
+    await client.storage.from(DOCUMENTS_BUCKET).remove([storageObjectPath]).catch(() => undefined)
+    throwDatabaseError(error, 'No se pudo registrar el documento')
+  }
+  return mapDocumentRow(data)
+}
+
+export async function updateSectionDocumentTitle(documentId, title) {
+  const normalizedTitle = String(title || '').trim()
+  if (!isUuid(documentId) || !normalizedTitle) {
+    throw new VideoHubApiError('Escribe un título válido.', { code: 'INVALID_DOCUMENT_TITLE' })
+  }
+  const { data, error } = await getClient()
+    .from('section_documents')
+    .update({ title: normalizedTitle })
+    .eq('id', documentId)
+    .select('id,organization_id,section_id,title,file_name,mime_type,file_size,storage_bucket,storage_object_path,sort_order,created_at')
+    .single()
+  throwDatabaseError(error, 'No se pudo editar el documento')
+  return mapDocumentRow(data)
+}
+
+export async function deleteSectionDocument(document) {
+  if (!isUuid(document?.id) || !document.storageBucket || !document.storageObjectPath) {
+    throw new VideoHubApiError('El documento no es válido.', { code: 'INVALID_DOCUMENT' })
+  }
+  const client = getClient()
+  const { error: storageError } = await client.storage
+    .from(document.storageBucket)
+    .remove([document.storageObjectPath])
+  throwDatabaseError(storageError, 'No se pudo borrar el archivo')
+  const { data, error } = await client.from('section_documents').delete().eq('id', document.id).select('id').single()
+  throwDatabaseError(error, 'No se pudo borrar el documento')
+  if (data?.id !== document.id) {
+    throw new VideoHubApiError('Supabase no confirmó la eliminación del documento.', {
+      code: 'DOCUMENT_DELETE_NOT_CONFIRMED',
+    })
+  }
+}
+
+export async function getSectionDocumentViewUrl(document) {
+  if (!document?.storageBucket || !document.storageObjectPath) {
+    throw new VideoHubApiError('El documento no tiene un archivo disponible.', {
+      code: 'INVALID_DOCUMENT',
+    })
+  }
+  const { data, error } = await getClient().storage
+    .from(document.storageBucket)
+    .createSignedUrl(document.storageObjectPath, 60 * 60)
+  throwDatabaseError(error, 'No se pudo abrir el documento')
+  return data?.signedUrl || ''
+}
+
 /**
  * Carga una vista completa desde Supabase. Las políticas RLS determinan qué
  * secciones, tarjetas, asignaciones y enlaces recibe cada rol.
@@ -575,7 +738,7 @@ export async function loadVideoHubSnapshot(options = {}) {
     (options.previousSnapshot?.videos || []).map((video) => [video.id, video]),
   )
 
-  const [organizationResult, settingsResult, sectionsResult, rolesResult, videosResult, assignmentsResult, quizzesResult, myProgressResult, myQuizResultsResult] = await Promise.all([
+  const [organizationResult, settingsResult, sectionsResult, rolesResult, videosResult, assignmentsResult, quizzesResult, myProgressResult, myQuizResultsResult, sectionContentResult, documentsResult] = await Promise.all([
     client.from('organizations').select('id,name,slug,logo_url').eq('id', organizationId).single(),
     client.from('app_settings').select('product_name,welcome_title,welcome_message,support_message,allow_light_mode,require_quiz_photo').eq('organization_id', organizationId).maybeSingle(),
     client.from('sections').select('id,name,slug,icon,sort_order,created_at').eq('organization_id', organizationId).eq('active', true).order('sort_order'),
@@ -585,6 +748,8 @@ export async function loadVideoHubSnapshot(options = {}) {
     client.from('video_quizzes').select('video_id,passing_score_percent,question_count').eq('organization_id', organizationId),
     client.from('video_watch_progress').select('video_id,completed').eq('organization_id', organizationId).eq('user_id', context.userId),
     client.from('video_quiz_results').select('video_id,attempts_count,best_score_percent,passed').eq('organization_id', organizationId).eq('user_id', context.userId),
+    client.from('section_content_settings').select('section_id,content_type').eq('organization_id', organizationId),
+    client.from('section_documents').select('id,organization_id,section_id,title,file_name,mime_type,file_size,storage_bucket,storage_object_path,sort_order,created_at').eq('organization_id', organizationId).eq('active', true).order('sort_order').order('created_at', { ascending: false }),
   ])
 
   throwDatabaseError(organizationResult.error, 'No se pudo leer la organización')
@@ -602,6 +767,9 @@ export async function loadVideoHubSnapshot(options = {}) {
   // funcionando con normalidad.
   if (quizzesResult.error) console.warn('No se pudieron leer los cuestionarios (¿falta aplicar la migración?):', quizzesResult.error.message)
   if (myQuizResultsResult.error) console.warn('No se pudieron leer tus cuestionarios (¿falta aplicar la migración?):', myQuizResultsResult.error.message)
+
+  if (sectionContentResult.error) console.warn('No se pudo leer el tipo de contenido de las secciones:', sectionContentResult.error.message)
+  if (documentsResult.error) console.warn('No se pudieron leer los documentos:', documentsResult.error.message)
 
   const sectionRows = sectionsResult.data || []
   const videoRows = videosResult.data || []
@@ -628,6 +796,7 @@ export async function loadVideoHubSnapshot(options = {}) {
   const quizByVideo = new Map((quizzesResult.data || []).map((row) => [row.video_id, row]))
   const myProgressByVideo = new Map((myProgressResult.data || []).map((row) => [row.video_id, row]))
   const myQuizResultByVideo = new Map((myQuizResultsResult.data || []).map((row) => [row.video_id, row]))
+  const contentTypeBySection = new Map((sectionContentResult.data || []).map((row) => [row.section_id, row.content_type]))
 
   const sections = sectionRows.map((section) => ({
     id: section.id,
@@ -638,6 +807,7 @@ export async function loadVideoHubSnapshot(options = {}) {
       .filter((row) => row.section_id === section.id && row.visible && VIEWER_ROLES.includes(row.role))
       .map((row) => row.role),
     order: section.sort_order,
+    contentType: contentTypeBySection.get(section.id) === 'documents' ? 'documents' : 'videos',
     createdAt: section.created_at,
   }))
 
@@ -701,6 +871,9 @@ export async function loadVideoHubSnapshot(options = {}) {
     settings: mapSettings(settingsResult.data),
     sections,
     videos,
+    documents: (documentsResult.data || [])
+      .filter((document) => sectionIds.has(document.section_id))
+      .map(mapDocumentRow),
     context,
   }
 }

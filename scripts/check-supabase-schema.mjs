@@ -15,6 +15,8 @@ const resources = [
   ['profiles', 'user_id,organization_id,role'],
   ['sections', 'id,organization_id,name'],
   ['section_roles', 'section_id,role,visible'],
+  ['section_content_settings', 'section_id,organization_id,content_type'],
+  ['section_documents', 'id,organization_id,section_id,storage_object_path'],
   ['videos', 'id,organization_id,title'],
   ['video_sources', 'video_id,provider'],
   ['video_assignments', 'video_id,role,is_locked'],
@@ -45,19 +47,21 @@ for (const [table, select] of resources) {
   }
 }
 
+for (const bucket of ['video-assets', 'document-assets']) {
 try {
-  const response = await fetch(`${projectUrl}/storage/v1/bucket/video-assets`, {
+  const response = await fetch(`${projectUrl}/storage/v1/bucket/${bucket}`, {
     headers: {
       apikey: secretKey,
     },
     signal: AbortSignal.timeout(15_000),
   })
   const ok = response.status >= 200 && response.status < 300
-  console.log(`${ok ? 'OK' : 'ERROR'} · storage.video-assets · HTTP ${response.status}`)
+  console.log(`${ok ? 'OK' : 'ERROR'} · storage.${bucket} · HTTP ${response.status}`)
   if (!ok) failed = true
 } catch (error) {
-  console.log(`ERROR · storage.video-assets · ${error.name}`)
+  console.log(`ERROR · storage.${bucket} · ${error.name}`)
   failed = true
+}
 }
 
 const requiredRpcChecks = [

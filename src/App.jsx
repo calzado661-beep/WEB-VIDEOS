@@ -22,6 +22,7 @@ import {
   Eye,
   EyeOff,
   Film,
+  FileText,
   FolderCog,
   Home,
   ImageIcon,
@@ -68,8 +69,10 @@ import {
   onAuthStateChange,
   queueDriveVideoImports,
   recordVideoProgress,
+  getSectionDocumentViewUrl,
   saveAdminSnapshot,
   saveVideoQuiz,
+  setSectionContentType,
   signOut,
   submitVideoQuizAttempt,
   updateUser,
@@ -77,6 +80,7 @@ import {
 } from './lib/videoHubApi'
 import { createAdminSaveRevisionTracker } from './lib/adminSaveRevision'
 import { downloadUsersExcel } from './lib/exportUsersExcel'
+import DocumentsManager from './DocumentsManager'
 import {
   getSourceAccent,
   getThumbnailSeekTime,
@@ -92,6 +96,7 @@ const EMPTY_DATA = {
   settings: null,
   sections: [],
   videos: [],
+  documents: [],
 }
 const SAVE_DELAY_MS = 700
 
@@ -936,6 +941,7 @@ const ADMIN_NAV = [
   { id: 'overview', label: 'Resumen', icon: LayoutDashboard },
   { id: 'sections', label: 'Secciones', icon: FolderCog },
   { id: 'videos', label: 'Biblioteca', icon: Video },
+  { id: 'documents', label: 'Documentos', icon: FileText },
   { id: 'settings', label: 'Configuración', icon: Settings2 },
   { id: 'users', label: 'Usuarios', icon: UsersRound },
   { id: 'progress', label: 'Progreso', icon: BarChart3 },
@@ -979,6 +985,11 @@ function AdminApp({
 
   const removeSection = (sectionId) => {
     const sectionName = data.sections.find((section) => section.id === sectionId)?.name || 'esta sección'
+    const documentCount = (data.documents || []).filter((document) => document.sectionId === sectionId).length
+    if (documentCount) {
+      notify(`Elimina primero los ${documentCount} documento(s) de “${sectionName}”.`, { tone: 'danger' })
+      return
+    }
     if (!window.confirm(`¿Eliminar ${sectionName}? También se quitarán sus asignaciones de video.`)) return
     setData((current) => ({
       ...current,
@@ -996,6 +1007,7 @@ function AdminApp({
     overview: ['Resumen general', 'Todo bajo control, en un solo lugar.'],
     sections: ['Secciones y navegación', 'Define lo que aparece en el menú de cada rol.'],
     videos: ['Biblioteca de videos', 'Publica contenido y decide quién puede verlo.'],
+    documents: ['Biblioteca de documentos', 'Sube y administra archivos PDF o Word por sección.'],
     settings: ['Configuración general', 'Personaliza los textos y preferencias de la plataforma.'],
     users: ['Usuarios', 'Crea, edita y deshabilita las cuentas de operante y jefe.'],
     progress: ['Progreso de usuarios', 'Qué tanto ha avanzado cada persona en su contenido asignado.'],
@@ -1062,8 +1074,9 @@ function AdminApp({
             <div><span className="eyebrow eyebrow--plain">PANEL DE CONTROL</span><h1>{titles[page][0]}</h1><p>{titles[page][1]}</p></div>
           </div>
           {page === 'overview' && <AdminOverview data={data} onNavigate={navigate} />}
-          {page === 'sections' && <SectionsManager data={data} setData={setData} onRemove={removeSection} onNotify={notify} />}
+          {page === 'sections' && <SectionsManager data={data} setData={setData} saveState={saveState} onRemove={removeSection} onNotify={notify} />}
           {page === 'videos' && <VideosManager data={data} setData={setData} saveState={saveState} persistedVideoIdsRef={persistedVideoIdsRef} onNotify={notify} />}
+          {page === 'documents' && <DocumentsManager data={data} setData={setData} onNotify={notify} />}
           {page === 'settings' && <SettingsManager data={data} setData={setData} />}
           {page === 'users' && <UsersManager onCreateUser={onCreateUser} onUpdateUser={onUpdateUser} onNotify={notify} />}
           {page === 'progress' && <ProgressManager data={data} />}
@@ -1185,11 +1198,12 @@ function AdminOverview({ data, onNavigate }) {
   )
 }
 
-function SectionsManager({ data, setData, onRemove, onNotify }) {
+function SectionsManager({ data, setData, saveState, onRemove, onNotify }) {
   const [adding, setAdding] = useState(false)
   const [draft, setDraft] = useState({ name: '', icon: 'layers', roles: ['operator'] })
   const [editingId, setEditingId] = useState(null)
   const [editingName, setEditingName] = useState('')
+  const [changingContentId, setChangingContentId] = useState(null)
 
   const addSection = (event) => {
     event.preventDefault()
@@ -1200,6 +1214,7 @@ function SectionsManager({ data, setData, onRemove, onNotify }) {
       icon: draft.icon,
       roles: draft.roles,
       order: data.sections.length,
+      contentType: 'videos',
     }
     setData((current) => ({ ...current, sections: [...current.sections, section] }))
     setDraft({ name: '', icon: 'layers', roles: ['operator'] })
@@ -1229,10 +1244,45 @@ function SectionsManager({ data, setData, onRemove, onNotify }) {
 
   const saveName = (id) => {
     if (editingName.trim()) {
+      if (!window.confirm('¿Guardar el nuevo nombre de esta sección?')) return
       setData((current) => ({ ...current, sections: current.sections.map((section) => section.id === id ? { ...section, name: editingName.trim() } : section) }))
       onNotify?.('Sección actualizada correctamente')
     }
     setEditingId(null)
+  }
+
+  const toggleContentType = async (section) => {
+    if (changingContentId || saveState.status !== 'saved') return
+    const documentCount = (data.documents || []).filter((document) => document.sectionId === section.id).length
+    const videoCount = data.videos.filter((video) => Object.values(video.assignments).includes(section.id)).length
+    const nextContentType = section.contentType === 'documents' ? 'videos' : 'documents'
+    if (nextContentType === 'videos' && documentCount) {
+      onNotify?.('Elimina primero los documentos de esta sección para volver al modo videos.', { tone: 'danger' })
+      return
+    }
+    const warning = nextContentType === 'documents' && videoCount
+      ? `Esta sección tiene ${videoCount} video(s). Al activar “Solo documentos” dejarán de mostrarse a los usuarios. ¿Continuar?`
+      : `¿Cambiar “${section.name}” al modo ${nextContentType === 'documents' ? 'Solo documentos' : 'Videos'}?`
+    if (!window.confirm(warning)) return
+    setChangingContentId(section.id)
+    try {
+      await setSectionContentType({
+        sectionId: section.id,
+        organizationId: data.organizationId,
+        contentType: nextContentType,
+      })
+      setData((current) => ({
+        ...current,
+        sections: current.sections.map((item) => item.id === section.id
+          ? { ...item, contentType: nextContentType }
+          : item),
+      }))
+      onNotify?.(`Sección “${section.name}” configurada para ${nextContentType === 'documents' ? 'solo documentos' : 'videos'}.`)
+    } catch (contentError) {
+      onNotify?.(getErrorMessage(contentError, 'No se pudo actualizar la sección.'), { tone: 'danger' })
+    } finally {
+      setChangingContentId(null)
+    }
   }
 
   const sortedSections = [...data.sections].sort((a, b) => a.order - b.order)
@@ -1255,15 +1305,17 @@ function SectionsManager({ data, setData, onRemove, onNotify }) {
         )}
 
         <div className="section-list">
-          <div className="section-list__head"><span>Sección</span><span>Visibilidad</span><span>Videos</span><span>Orden</span><span>Acciones</span></div>
+          <div className="section-list__head"><span>Sección</span><span>Visibilidad</span><span>Contenido</span><span>Archivos</span><span>Orden</span><span>Acciones</span></div>
           {sortedSections.map((section, index) => {
             const Icon = ICONS[section.icon] || Layers3
             const count = data.videos.filter((video) => Object.values(video.assignments).includes(section.id)).length
+            const documentCount = (data.documents || []).filter((document) => document.sectionId === section.id).length
             return (
               <div className="section-row" key={section.id}>
                 <div className="section-identity"><span className="section-icon"><Icon size={18} /></span>{editingId === section.id ? <div className="inline-edit"><input value={editingName} onChange={(event) => setEditingName(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') saveName(section.id) }} autoFocus /><button onClick={() => saveName(section.id)}><Check size={15} /></button></div> : <div><strong>{section.name}</strong><small>/{section.id.split('-').slice(0, -1).join('-') || section.id}</small></div>}</div>
                 <div className="role-toggles">{['operator', 'boss'].map((role) => <button className={section.roles.includes(role) ? 'on' : ''} onClick={() => toggleRole(section.id, role)} key={role}><span>{section.roles.includes(role) && <Check size={11} />}</span>{ROLE_META[role].label}</button>)}</div>
-                <span className="count-chip">{count} {count === 1 ? 'video' : 'videos'}</span>
+                <button type="button" className={`content-mode-toggle ${section.contentType === 'documents' ? 'on' : ''}`} disabled={changingContentId === section.id || saveState.status !== 'saved'} onClick={() => toggleContentType(section)}><span>{section.contentType === 'documents' ? <Check size={11} /> : null}</span>{section.contentType === 'documents' ? 'Solo documentos' : 'Videos'}</button>
+                <span className="count-chip">{section.contentType === 'documents' ? `${documentCount} doc.` : `${count} video${count === 1 ? '' : 's'}`}</span>
                 <div className="order-buttons"><button disabled={index === 0} onClick={() => move(section.id, -1)}><ChevronLeft size={16} /></button><button disabled={index === sortedSections.length - 1} onClick={() => move(section.id, 1)}><ChevronRight size={16} /></button></div>
                 <div className="row-actions"><button onClick={() => { setEditingId(section.id); setEditingName(section.name) }}><Pencil size={16} /></button><button className="danger" onClick={() => onRemove(section.id)}><Trash2 size={16} /></button></div>
               </div>
@@ -1302,7 +1354,9 @@ function VideosManager({ data, setData, saveState, persistedVideoIdsRef, onNotif
   const [combinedSave, setCombinedSave] = useState(null)
   const quizEditorRef = useRef(null)
 
-  const sectionsFor = (role) => [...data.sections].filter((section) => section.roles.includes(role)).sort((a, b) => a.order - b.order)
+  const sectionsFor = (role) => [...data.sections]
+    .filter((section) => section.roles.includes(role) && section.contentType !== 'documents')
+    .sort((a, b) => a.order - b.order)
 
   const openNew = () => {
     setEditingId(null)
@@ -1600,6 +1654,8 @@ const VideoQuizEditor = forwardRef(function VideoQuizEditor({ videoId, videoPend
     if (!validate()) return false
     if (videoPending) { setError('Espera a que el video termine de guardarse antes de agregar su cuestionario.'); return false }
     if (!questions.length) return true
+    const actionLabel = editingUser ? 'guardar los cambios de este usuario' : 'crear este usuario'
+    if (!window.confirm(`¿Confirmas que deseas ${actionLabel}?`)) return
     setSaving(true)
     try {
       await saveVideoQuiz(videoId, { passingScorePercent, questions })
@@ -1813,6 +1869,7 @@ function UsersManager({ onCreateUser, onUpdateUser, onNotify }) {
   }
 
   const toggleActive = async (user) => {
+    if (!window.confirm(`¿${user.active ? 'Deshabilitar' : 'Habilitar'} al usuario “${user.displayName || user.username}”?`)) return
     try {
       await onUpdateUser({ userId: user.userId, active: !user.active })
       onNotify?.(`Usuario ${user.active ? 'desactivado' : 'activado'} correctamente`)
@@ -2310,6 +2367,7 @@ function RolePreview({ data }) {
   const [role, setRole] = useState('operator')
   const [activeSection, setActiveSection] = useState('home')
   const [selectedVideo, setSelectedVideo] = useState(null)
+  const [selectedDocument, setSelectedDocument] = useState(null)
   const [query, setQuery] = useState('')
   const [navOpen, setNavOpen] = useState(false)
   useEffect(() => {
@@ -2322,8 +2380,10 @@ function RolePreview({ data }) {
     }
   }, [data.videos, role, selectedVideo])
   const sections = useMemo(() => [...data.sections].filter((section) => section.roles.includes(role)).sort((a, b) => a.order - b.order), [data.sections, role])
-  const visibleSectionIds = new Set(sections.map((section) => section.id))
+  const visibleSectionIds = new Set(sections.filter((section) => section.contentType !== 'documents').map((section) => section.id))
   const videos = data.videos.filter((video) => visibleSectionIds.has(video.assignments[role]))
+  const visibleDocumentSectionIds = new Set(sections.filter((section) => section.contentType === 'documents').map((section) => section.id))
+  const documents = (data.documents || []).filter((document) => visibleDocumentSectionIds.has(document.sectionId))
   const blockedVideos = videos.filter((video) => isVideoLockedFor(video, role))
   const availableVideos = videos.filter((video) => !isVideoLockedFor(video, role))
   const activeSectionData = sections.find((section) => section.id === activeSection)
@@ -2333,10 +2393,15 @@ function RolePreview({ data }) {
     const matches = `${video.title} ${video.description}`.toLowerCase().includes(query.toLowerCase())
     return belongs && matches
   })
+  const filteredDocuments = documents.filter((document) => {
+    const belongs = activeSection === 'home' || document.sectionId === activeSection
+    return belongs && (document.title + ' ' + document.fileName).toLowerCase().includes(query.toLowerCase())
+  })
 
   const resetPreview = () => {
     setActiveSection('home')
     setSelectedVideo(null)
+    setSelectedDocument(null)
     setQuery('')
     setNavOpen(false)
   }
@@ -2349,6 +2414,7 @@ function RolePreview({ data }) {
   const navigate = (sectionId) => {
     setActiveSection(sectionId)
     setSelectedVideo(null)
+    setSelectedDocument(null)
     setNavOpen(false)
   }
 
@@ -2370,7 +2436,7 @@ function RolePreview({ data }) {
               <small className="sidebar-label">EXPLORAR</small>
               <button className={activeSection === 'home' ? 'active' : ''} onClick={() => navigate('home')}><Home size={18} /><span>Inicio</span></button>
               <small className="sidebar-label sidebar-label--spaced">MI CONTENIDO</small>
-              {sections.map((section) => { const Icon = ICONS[section.icon] || Layers3; return <button className={activeSection === section.id ? 'active' : ''} onClick={() => navigate(section.id)} key={section.id}><Icon size={18} /><span>{section.name}</span><small>{videos.filter((video) => video.assignments[role] === section.id).length}</small></button> })}
+              {sections.map((section) => { const isDocuments = section.contentType === 'documents'; const Icon = isDocuments ? FileText : (ICONS[section.icon] || Layers3); const count = isDocuments ? documents.filter((document) => document.sectionId === section.id).length : videos.filter((video) => video.assignments[role] === section.id).length; return <button className={activeSection === section.id ? 'active' : ''} onClick={() => navigate(section.id)} key={section.id}><Icon size={18} /><span>{section.name}</span><small>{count}</small></button> })}
             </nav>
             <div className="sidebar-help"><span><CircleHelp size={16} /></span><div><strong>¿Necesitas ayuda?</strong><small>{data.settings?.supportMessage || 'Contacta a tu administrador'}</small></div></div>
             <div className="role-preview-sidebar-foot"><Eye size={15} /> Vista simulada</div>
@@ -2379,14 +2445,18 @@ function RolePreview({ data }) {
           <section className="role-preview-main">
             <header className="role-preview-topbar">
               <button className="role-preview-menu" onClick={() => setNavOpen(true)} aria-label="Abrir menú de la vista previa"><Menu size={19} /></button>
-              <label className="global-search"><Search size={17} /><input value={query} onChange={(event) => { setQuery(event.target.value); setSelectedVideo(null) }} placeholder="Buscar en tus videos…" /></label>
+              <label className="global-search"><Search size={17} /><input value={query} onChange={(event) => { setQuery(event.target.value); setSelectedVideo(null); setSelectedDocument(null) }} placeholder="Buscar videos o documentos…" /></label>
               <div className="viewer-profile"><div><span>Bienvenido</span><strong>{ROLE_META[role].label}</strong></div><span className="role-avatar">{ROLE_META[role].short}</span></div>
             </header>
             <main className="role-preview-content">
-              {selectedVideo ? (
+              {selectedDocument ? (
+                <DocumentViewerPage document={selectedDocument} onBack={() => setSelectedDocument(null)} />
+              ) : selectedVideo ? (
                 <VideoPlayerPage video={selectedVideo} role={role} data={data} onBack={() => setSelectedVideo(null)} onPlay={openVideo} />
               ) : activeSection === 'home' && !query ? (
-                <ViewerHome role={role} settings={data.settings} videos={videos} sections={sections} featured={featured} lockedCount={blockedVideos.length} onPlay={openVideo} onSection={navigate} />
+                <ViewerHome role={role} settings={data.settings} videos={videos} documents={documents} sections={sections} featured={featured} lockedCount={blockedVideos.length} onPlay={openVideo} onSection={navigate} />
+              ) : activeSectionData?.contentType === 'documents' || (activeSection === 'home' && query && filteredDocuments.length) ? (
+                <DocumentListing title={activeSection === 'home' ? 'Resultados de documentos' : activeSectionData?.name || 'Documentos'} subtitle="Documentos disponibles para consulta" documents={filteredDocuments} onOpen={setSelectedDocument} />
               ) : (
                 <VideoListing role={role} title={activeSection === 'home' ? 'Resultados de búsqueda' : activeSectionData?.name || 'Videos'} subtitle={query ? `Resultados para “${query}”` : 'Contenido seleccionado para este perfil'} videos={filtered} onPlay={openVideo} />
               )}
@@ -2403,14 +2473,19 @@ function ViewerApp({ role, userId, data, theme, toggleTheme, onLogout }) {
   const [completedVideoIds, setCompletedVideoIds] = useState(() => new Set())
   const sections = useMemo(() => [...data.sections].filter((section) => section.roles.includes(role)).sort((a, b) => a.order - b.order), [data.sections, role])
   const targetedVideos = useMemo(() => {
-    const visibleSectionIds = new Set(sections.map((section) => section.id))
+    const visibleSectionIds = new Set(sections.filter((section) => section.contentType !== 'documents').map((section) => section.id))
     return data.videos
       .filter((video) => visibleSectionIds.has(video.assignments[role]))
       .map((video) => completedVideoIds.has(video.id) && !video.watched ? { ...video, watched: true } : video)
   }, [completedVideoIds, data.videos, role, sections])
+  const targetedDocuments = useMemo(() => {
+    const visibleSectionIds = new Set(sections.filter((section) => section.contentType === 'documents').map((section) => section.id))
+    return (data.documents || []).filter((document) => visibleSectionIds.has(document.sectionId))
+  }, [data.documents, sections])
   const playableVideos = useMemo(() => targetedVideos.filter((video) => !isVideoLockedFor(video, role)), [role, targetedVideos])
   const [activeSection, setActiveSection] = useState('home')
   const [selectedVideo, setSelectedVideo] = useState(null)
+  const [selectedDocument, setSelectedDocument] = useState(null)
   const [query, setQuery] = useState('')
   const [menuOpen, setMenuOpen] = useState(false)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
@@ -2430,6 +2505,10 @@ function ViewerApp({ role, userId, data, theme, toggleTheme, onLogout }) {
     setSelectedVideo(video)
   }
 
+  const openDocument = (document) => {
+    if (document) setSelectedDocument(document)
+  }
+
   const markVideoCompleted = useCallback((videoId) => {
     setCompletedVideoIds((current) => {
       if (current.has(videoId)) return current
@@ -2442,12 +2521,18 @@ function ViewerApp({ role, userId, data, theme, toggleTheme, onLogout }) {
   const navigate = (sectionId) => {
     setActiveSection(sectionId)
     setSelectedVideo(null)
+    setSelectedDocument(null)
     setMenuOpen(false)
   }
 
   const filtered = targetedVideos.filter((video) => {
     const belongs = activeSection === 'home' || video.assignments[role] === activeSection
     const matches = `${video.title} ${video.description}`.toLowerCase().includes(query.toLowerCase())
+    return belongs && matches
+  })
+  const filteredDocuments = targetedDocuments.filter((document) => {
+    const belongs = activeSection === 'home' || document.sectionId === activeSection
+    const matches = (document.title + ' ' + document.fileName).toLowerCase().includes(query.toLowerCase())
     return belongs && matches
   })
 
@@ -2474,7 +2559,7 @@ function ViewerApp({ role, userId, data, theme, toggleTheme, onLogout }) {
           <small className="sidebar-label">EXPLORAR</small>
           <button className={activeSection === 'home' ? 'active' : ''} onClick={() => navigate('home')} title={sidebarCollapsed ? 'Inicio' : undefined}><Home size={19} /><span>Inicio</span></button>
           <small className="sidebar-label sidebar-label--spaced">MI CONTENIDO</small>
-          {sections.map((section) => { const Icon = ICONS[section.icon] || Layers3; return <button className={activeSection === section.id ? 'active' : ''} onClick={() => navigate(section.id)} title={sidebarCollapsed ? section.name : undefined} key={section.id}><Icon size={19} /><span>{section.name}</span><small>{targetedVideos.filter((video) => video.assignments[role] === section.id).length}</small></button> })}
+          {sections.map((section) => { const Icon = section.contentType === 'documents' ? FileText : (ICONS[section.icon] || Layers3); const count = section.contentType === 'documents' ? targetedDocuments.filter((document) => document.sectionId === section.id).length : targetedVideos.filter((video) => video.assignments[role] === section.id).length; return <button className={activeSection === section.id ? 'active' : ''} onClick={() => navigate(section.id)} title={sidebarCollapsed ? section.name : undefined} key={section.id}><Icon size={19} /><span>{section.name}</span><small>{count}</small></button> })}
         </nav>
         <div className="sidebar-help"><span><CircleHelp size={17} /></span><div><strong>¿Necesitas ayuda?</strong><small>{data.settings?.supportMessage || 'Contacta a tu administrador'}</small></div></div>
         <div className="sidebar__bottom">{data.settings?.allowLightMode !== false && <ThemeToggle theme={theme} onToggle={toggleTheme} />}<button className="sidebar-action" onClick={onLogout} title={sidebarCollapsed ? 'Cerrar sesión' : undefined}><LogOut size={18} /><span>Cerrar sesión</span></button></div>
@@ -2483,15 +2568,19 @@ function ViewerApp({ role, userId, data, theme, toggleTheme, onLogout }) {
       <section className="main-shell viewer-main">
         <header className="topbar viewer-topbar">
           <button className="mobile-menu" onClick={() => setMenuOpen(true)}><Menu size={21} /></button>
-          <label className="global-search"><Search size={18} /><input value={query} onChange={(event) => { setQuery(event.target.value); setSelectedVideo(null) }} placeholder="Buscar en tus videos…" /></label>
+          <label className="global-search"><Search size={18} /><input value={query} onChange={(event) => { setQuery(event.target.value); setSelectedVideo(null); setSelectedDocument(null) }} placeholder="Buscar videos o documentos…" /></label>
           <div className="viewer-profile"><div><span>Bienvenido</span><strong>{ROLE_META[role].label}</strong></div><span className="role-avatar">{ROLE_META[role].short}</span></div>
         </header>
 
         <main className="content-area viewer-content">
-          {selectedVideo ? (
+          {selectedDocument ? (
+            <DocumentViewerPage document={selectedDocument} onBack={() => setSelectedDocument(null)} />
+          ) : selectedVideo ? (
             <VideoPlayerPage video={selectedVideo} role={role} userId={userId} data={data} onBack={() => setSelectedVideo(null)} onPlay={openVideo} onCompleted={markVideoCompleted} />
           ) : activeSection === 'home' && !query ? (
-            <ViewerHome role={role} settings={data.settings} videos={targetedVideos} sections={sections} featured={featured} lockedCount={lockedCount} onPlay={openVideo} onSection={navigate} />
+            <ViewerHome role={role} settings={data.settings} videos={targetedVideos} documents={targetedDocuments} sections={sections} featured={featured} lockedCount={lockedCount} onPlay={openVideo} onSection={navigate} />
+          ) : activeSectionData?.contentType === 'documents' || (activeSection === 'home' && query && filteredDocuments.length) ? (
+            <DocumentListing title={activeSection === 'home' ? 'Resultados de documentos' : activeSectionData?.name || 'Documentos'} subtitle={query ? `Resultados para “${query}”` : 'Documentos disponibles para consulta'} documents={filteredDocuments} onOpen={openDocument} />
           ) : (
             <VideoListing role={role} title={activeSection === 'home' ? 'Resultados de búsqueda' : activeSectionData?.name || 'Videos'} subtitle={query ? `Resultados para “${query}”` : 'Contenido seleccionado para tu perfil'} videos={filtered} onPlay={openVideo} />
           )}
@@ -2501,7 +2590,7 @@ function ViewerApp({ role, userId, data, theme, toggleTheme, onLogout }) {
   )
 }
 
-function ViewerHome({ role, settings, videos, sections, featured, lockedCount, onPlay, onSection }) {
+function ViewerHome({ role, settings, videos, documents, sections, featured, lockedCount, onPlay, onSection }) {
   const recent = [...videos].sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
   const availableCount = videos.length - lockedCount
   return (
@@ -2518,7 +2607,7 @@ function ViewerHome({ role, settings, videos, sections, featured, lockedCount, o
       <div className="viewer-section-heading"><div><span className="eyebrow eyebrow--plain">RECIENTES</span><h2>Continúa explorando</h2></div><span>{availableCount} disponibles{lockedCount ? ` · ${lockedCount} bloqueados` : ''}</span></div>
       <div className="viewer-video-grid">{recent.slice(0, 6).map((video) => <ViewerVideoCard role={role} video={video} section={sections.find((item) => item.id === video.assignments[role])} onPlay={() => onPlay(video)} key={video.id} />)}</div>
       {!videos.length && <EmptyState icon={Film} title="Todavía no hay contenido" text="El administrador aún no ha habilitado videos para tu perfil." />}
-      <section className="category-strip"><div className="viewer-section-heading"><div><span className="eyebrow eyebrow--plain">SECCIONES</span><h2>Explora por categoría</h2></div></div><div className="category-grid">{sections.map((section) => { const Icon = ICONS[section.icon] || Layers3; const count = videos.filter((video) => video.assignments[role] === section.id).length; return <button onClick={() => onSection(section.id)} key={section.id}><span><Icon size={20} /></span><div><strong>{section.name}</strong><small>{count} {count === 1 ? 'video' : 'videos'}</small></div><ChevronRight size={17} /></button> })}</div></section>
+      <section className="category-strip"><div className="viewer-section-heading"><div><span className="eyebrow eyebrow--plain">SECCIONES</span><h2>Explora por categoría</h2></div></div><div className="category-grid">{sections.map((section) => { const isDocuments = section.contentType === 'documents'; const Icon = isDocuments ? FileText : (ICONS[section.icon] || Layers3); const count = isDocuments ? documents.filter((document) => document.sectionId === section.id).length : videos.filter((video) => video.assignments[role] === section.id).length; return <button onClick={() => onSection(section.id)} key={section.id}><span><Icon size={20} /></span><div><strong>{section.name}</strong><small>{count} {isDocuments ? (count === 1 ? 'documento' : 'documentos') : (count === 1 ? 'video' : 'videos')}</small></div><ChevronRight size={17} /></button> })}</div></section>
       {lockedCount > 0 && <div className="locked-notice"><LockKeyhole size={18} /><div><strong>Contenido bloqueado por el administrador</strong><p>{lockedCount} {lockedCount === 1 ? 'video aparece bloqueado' : 'videos aparecen bloqueados'} en tu biblioteca. Puedes identificarlos, pero no abrirlos ni reproducirlos.</p></div></div>}
     </div>
   )
@@ -2530,6 +2619,65 @@ function VideoListing({ role, title, subtitle, videos, onPlay }) {
       <div className="listing-heading"><span className="eyebrow eyebrow--plain">BIBLIOTECA</span><h1>{title}</h1><p>{subtitle}</p></div>
       <div className="viewer-video-grid">{videos.map((video) => <ViewerVideoCard role={role} video={video} onPlay={() => onPlay(video)} key={video.id} />)}</div>
       {!videos.length && <EmptyState icon={Search} title="No hay resultados" text="No encontramos videos con esos criterios." />}
+    </div>
+  )
+}
+
+function DocumentListing({ title, subtitle, documents, onOpen }) {
+  return (
+    <div>
+      <div className="listing-heading"><span className="eyebrow eyebrow--plain">DOCUMENTOS</span><h1>{title}</h1><p>{subtitle}</p></div>
+      <div className="viewer-document-grid">
+        {documents.map((document) => <article className="viewer-document-card" key={document.id} onClick={() => onOpen(document)}><span className="viewer-document-card__icon"><FileText size={27} /><small>{document.mimeType.includes('word') ? 'WORD' : 'PDF'}</small></span><div><small>{formatDocumentSize(document.fileSize)}</small><h3>{document.title}</h3><p>{document.fileName}</p><button type="button" onClick={(event) => { event.stopPropagation(); onOpen(document) }}><Eye size={14} /> Visualizar documento</button></div></article>)}
+      </div>
+      {!documents.length && <EmptyState icon={FileText} title="No hay documentos" text="El administrador aún no ha publicado documentos en esta sección." />}
+    </div>
+  )
+}
+
+function formatDocumentSize(bytes) {
+  if (!Number.isFinite(bytes) || bytes <= 0) return 'Documento'
+  if (bytes < 1024 * 1024) return Math.max(1, Math.round(bytes / 1024)) + ' KB'
+  return (bytes / (1024 * 1024)).toFixed(1) + ' MB'
+}
+
+function DocumentViewerPage({ document, onBack }) {
+  const [viewUrl, setViewUrl] = useState('')
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState('')
+
+  useEffect(() => {
+    let active = true
+    setLoading(true)
+    setError('')
+    getSectionDocumentViewUrl(document)
+      .then((url) => {
+        if (!active) return
+        if (!url) throw new Error('No se recibió un enlace de visualización.')
+        setViewUrl(url)
+      })
+      .catch((viewError) => {
+        if (active) setError(getErrorMessage(viewError, 'No se pudo abrir el documento.'))
+      })
+      .finally(() => { if (active) setLoading(false) })
+    return () => { active = false }
+  }, [document])
+
+  const isWord = document.mimeType.includes('word') || document.mimeType.includes('officedocument')
+  const embeddedUrl = isWord && viewUrl
+    ? 'https://view.officeapps.live.com/op/embed.aspx?src=' + encodeURIComponent(viewUrl)
+    : viewUrl
+
+  return (
+    <div className="document-viewer-page">
+      <button type="button" className="back-button" onClick={onBack}><ArrowLeft size={16} /> Volver a documentos</button>
+      <div className="document-viewer-heading"><span><FileText size={20} /></span><div><small>SOLO LECTURA · {isWord ? 'WORD' : 'PDF'} · {formatDocumentSize(document.fileSize)}</small><h1>{document.title}</h1><p>{document.fileName}</p></div></div>
+      <section className="document-frame" aria-busy={loading}>
+        {loading && <div className="document-frame__status"><span className="loading-spinner" /><strong>Preparando documento…</strong></div>}
+        {!loading && error && <div className="document-frame__status document-frame__status--error"><CircleAlert size={28} /><strong>No se pudo mostrar el documento</strong><p>{error}</p></div>}
+        {!loading && !error && embeddedUrl && <iframe src={embeddedUrl} title={document.title} referrerPolicy="no-referrer" />}
+      </section>
+      <div className="info-callout"><ShieldCheck size={19} /><div><strong>Vista protegida</strong><p>Este archivo se abre con un enlace temporal y solo está disponible para usuarios autorizados en esta sección.</p></div></div>
     </div>
   )
 }
