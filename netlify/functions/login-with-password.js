@@ -13,7 +13,8 @@ const RATE_LIMIT_WINDOW_SECONDS = 15 * 60
 const MAX_USER_FAILURES = 8
 const MAX_IP_FAILURES = 30
 const USERNAME_PATTERN = /^[a-z0-9._-]{3,32}$/
-const MIN_PASSWORD_LENGTH = 8
+// Supabase Auth permits the existing six-character Nissei passwords.
+const MIN_PASSWORD_LENGTH = 6
 const MAX_PASSWORD_LENGTH = 128
 
 function normalizeUsername(value) {
