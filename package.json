@@ -10,6 +10,7 @@
     "test:persistence": "node --test scripts/supabase-only-persistence.test.mjs",
     "test:drive-import": "node --test scripts/drive-import.test.mjs",
     "test:video-utils": "node --test scripts/video-utils.test.mjs",
+    "test:learning": "node --test scripts/learning-rules.test.mjs scripts/learning-database.test.mjs",
     "check:supabase": "node scripts/check-supabase.mjs",
     "check:supabase-schema": "node scripts/check-supabase-schema.mjs",
     "provision:admin-user": "node scripts/provision-admin-user.mjs",
@@ -24,6 +25,7 @@
     "react-dom": "^19.2.8"
   },
   "devDependencies": {
+    "@electric-sql/pglite": "^0.5.8",
     "@vitejs/plugin-react": "^6.0.5",
     "vite": "^8.2.0"
   }

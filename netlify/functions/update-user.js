@@ -60,7 +60,7 @@ export default async function updateUser(request) {
 
     const { data: targetProfile, error: targetProfileError } = await serviceClient
       .from('profiles')
-      .select('user_id, organization_id, role')
+      .select('user_id, organization_id, role, username')
       .eq('user_id', userId)
       .eq('organization_id', accessContext.organizationId)
       .maybeSingle()
@@ -107,6 +107,16 @@ export default async function updateUser(request) {
 
     if (body.active !== undefined) {
       updates.active = Boolean(body.active)
+    }
+
+    if (body.requireQuizPhotoOverride !== undefined) {
+      if (targetProfile.username !== 'invitado.nissei') {
+        return jsonResponse({ error: 'Esta opción es exclusiva del usuario invitado.' }, 400)
+      }
+      if (body.requireQuizPhotoOverride !== null && typeof body.requireQuizPhotoOverride !== 'boolean') {
+        return jsonResponse({ error: 'La opción de foto no es válida.' }, 400)
+      }
+      updates.require_quiz_photo_override = body.requireQuizPhotoOverride
     }
 
     if (body.newPassword !== undefined) {

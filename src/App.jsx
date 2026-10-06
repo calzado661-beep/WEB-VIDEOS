@@ -72,7 +72,6 @@ import {
   getSectionDocumentViewUrl,
   saveAdminSnapshot,
   saveVideoQuiz,
-  setSectionContentType,
   signOut,
   submitVideoQuizAttempt,
   updateUser,
@@ -81,6 +80,8 @@ import {
 import { createAdminSaveRevisionTracker } from './lib/adminSaveRevision'
 import { downloadUsersExcel } from './lib/exportUsersExcel'
 import DocumentsManager from './DocumentsManager'
+import QuizAttemptsManager from './QuizAttemptsManager'
+import { getQuizAttemptState, withLearningAccess, validateLearningSequence } from './learningRules'
 import {
   getSourceAccent,
   getThumbnailSeekTime,
@@ -131,7 +132,7 @@ const AUDIENCE_META = {
 }
 
 const isVideoAssignedTo = (video, role) => Boolean(video.assignments?.[role])
-const isVideoLockedFor = (video, role) => isVideoAssignedTo(video, role) && Boolean(video.locked?.[role])
+const isVideoLockedFor = (video, role) => isVideoAssignedTo(video, role) && Boolean(video.locked?.[role] || video.learningLocked?.[role])
 
 function getVideoAudience(video) {
   const forOperator = isVideoAssignedTo(video, 'operator')
@@ -179,6 +180,7 @@ function editableSnapshotFingerprint(snapshot) {
       duration: video.duration,
       assignments: video.assignments || {},
       locked: video.locked || {},
+      prerequisites: video.prerequisites || {},
       featured: Boolean(video.featured),
       createdAt: video.createdAt,
       source: video.source || null,
@@ -646,6 +648,13 @@ function App() {
 
   return (
     <ViewerApp
+      onRefresh={async () => {
+        const epoch = loadEpochRef.current
+        const snapshot = await loadVideoHubSnapshot({ previousSnapshot: latestDataRef.current })
+        if (epoch !== loadEpochRef.current) return
+        latestDataRef.current = snapshot
+        setData(snapshot)
+      }}
       role={accessContext.role}
       userId={accessContext.userId}
       data={data}
@@ -962,6 +971,7 @@ function AdminApp({
   onLogout,
 }) {
   const [page, setPage] = useState('overview')
+  const [videoSectionToAdd, setVideoSectionToAdd] = useState(null)
   const [menuOpen, setMenuOpen] = useState(false)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [toast, setToast] = useState(null)
@@ -980,6 +990,7 @@ function AdminApp({
 
   const navigate = (nextPage) => {
     setPage(nextPage)
+    if (nextPage !== 'videos') setVideoSectionToAdd(null)
     setMenuOpen(false)
   }
 
@@ -1074,8 +1085,8 @@ function AdminApp({
             <div><span className="eyebrow eyebrow--plain">PANEL DE CONTROL</span><h1>{titles[page][0]}</h1><p>{titles[page][1]}</p></div>
           </div>
           {page === 'overview' && <AdminOverview data={data} onNavigate={navigate} />}
-          {page === 'sections' && <SectionsManager data={data} setData={setData} saveState={saveState} onRemove={removeSection} onNotify={notify} />}
-          {page === 'videos' && <VideosManager data={data} setData={setData} saveState={saveState} persistedVideoIdsRef={persistedVideoIdsRef} onNotify={notify} />}
+          {page === 'sections' && <SectionsManager data={data} setData={setData} saveState={saveState} onRemove={removeSection} onNotify={notify} onManageVideos={(sectionId) => { setVideoSectionToAdd(sectionId); navigate('videos') }} />}
+          {page === 'videos' && <VideosManager data={data} setData={setData} saveState={saveState} persistedVideoIdsRef={persistedVideoIdsRef} onNotify={notify} initialSectionId={videoSectionToAdd} />}
           {page === 'documents' && <DocumentsManager data={data} setData={setData} onNotify={notify} />}
           {page === 'settings' && <SettingsManager data={data} setData={setData} />}
           {page === 'users' && <UsersManager onCreateUser={onCreateUser} onUpdateUser={onUpdateUser} onNotify={notify} />}
@@ -1198,12 +1209,13 @@ function AdminOverview({ data, onNavigate }) {
   )
 }
 
-function SectionsManager({ data, setData, saveState, onRemove, onNotify }) {
+function SectionsManager({ data, setData, saveState, onRemove, onNotify, onManageVideos }) {
   const [adding, setAdding] = useState(false)
   const [draft, setDraft] = useState({ name: '', icon: 'layers', roles: ['operator'] })
   const [editingId, setEditingId] = useState(null)
   const [editingName, setEditingName] = useState('')
-  const [changingContentId, setChangingContentId] = useState(null)
+  const [openSectionId, setOpenSectionId] = useState(null)
+  const [activeTab, setActiveTab] = useState('videos')
 
   const addSection = (event) => {
     event.preventDefault()
@@ -1251,41 +1263,16 @@ function SectionsManager({ data, setData, saveState, onRemove, onNotify }) {
     setEditingId(null)
   }
 
-  const toggleContentType = async (section) => {
-    if (changingContentId || saveState.status !== 'saved') return
-    const documentCount = (data.documents || []).filter((document) => document.sectionId === section.id).length
-    const videoCount = data.videos.filter((video) => Object.values(video.assignments).includes(section.id)).length
-    const nextContentType = section.contentType === 'documents' ? 'videos' : 'documents'
-    if (nextContentType === 'videos' && documentCount) {
-      onNotify?.('Elimina primero los documentos de esta sección para volver al modo videos.', { tone: 'danger' })
-      return
-    }
-    const warning = nextContentType === 'documents' && videoCount
-      ? `Esta sección tiene ${videoCount} video(s). Al activar “Solo documentos” dejarán de mostrarse a los usuarios. ¿Continuar?`
-      : `¿Cambiar “${section.name}” al modo ${nextContentType === 'documents' ? 'Solo documentos' : 'Videos'}?`
-    if (!window.confirm(warning)) return
-    setChangingContentId(section.id)
-    try {
-      await setSectionContentType({
-        sectionId: section.id,
-        organizationId: data.organizationId,
-        contentType: nextContentType,
-      })
-      setData((current) => ({
-        ...current,
-        sections: current.sections.map((item) => item.id === section.id
-          ? { ...item, contentType: nextContentType }
-          : item),
-      }))
-      onNotify?.(`Sección “${section.name}” configurada para ${nextContentType === 'documents' ? 'solo documentos' : 'videos'}.`)
-    } catch (contentError) {
-      onNotify?.(getErrorMessage(contentError, 'No se pudo actualizar la sección.'), { tone: 'danger' })
-    } finally {
-      setChangingContentId(null)
-    }
-  }
-
   const sortedSections = [...data.sections].sort((a, b) => a.order - b.order)
+  const openSection = data.sections.find((section) => section.id === openSectionId)
+  const sectionVideos = data.videos.filter((video) => Object.values(video.assignments || {}).includes(openSectionId))
+
+  useEffect(() => {
+    if (!openSectionId) return undefined
+    const closeOnEscape = (event) => { if (event.key === 'Escape') setOpenSectionId(null) }
+    document.addEventListener('keydown', closeOnEscape)
+    return () => document.removeEventListener('keydown', closeOnEscape)
+  }, [openSectionId])
 
   return (
     <div className="manager-stack">
@@ -1305,7 +1292,7 @@ function SectionsManager({ data, setData, saveState, onRemove, onNotify }) {
         )}
 
         <div className="section-list">
-          <div className="section-list__head"><span>Sección</span><span>Visibilidad</span><span>Contenido</span><span>Archivos</span><span>Orden</span><span>Acciones</span></div>
+          <div className="section-list__head"><span>Sección</span><span>Visibilidad</span><span>Archivos</span><span>Orden</span><span>Acciones</span></div>
           {sortedSections.map((section, index) => {
             const Icon = ICONS[section.icon] || Layers3
             const count = data.videos.filter((video) => Object.values(video.assignments).includes(section.id)).length
@@ -1314,8 +1301,7 @@ function SectionsManager({ data, setData, saveState, onRemove, onNotify }) {
               <div className="section-row" key={section.id}>
                 <div className="section-identity"><span className="section-icon"><Icon size={18} /></span>{editingId === section.id ? <div className="inline-edit"><input value={editingName} onChange={(event) => setEditingName(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') saveName(section.id) }} autoFocus /><button onClick={() => saveName(section.id)}><Check size={15} /></button></div> : <div><strong>{section.name}</strong><small>/{section.id.split('-').slice(0, -1).join('-') || section.id}</small></div>}</div>
                 <div className="role-toggles">{['operator', 'boss'].map((role) => <button className={section.roles.includes(role) ? 'on' : ''} onClick={() => toggleRole(section.id, role)} key={role}><span>{section.roles.includes(role) && <Check size={11} />}</span>{ROLE_META[role].label}</button>)}</div>
-                <button type="button" className={`content-mode-toggle ${section.contentType === 'documents' ? 'on' : ''}`} disabled={changingContentId === section.id || saveState.status !== 'saved'} onClick={() => toggleContentType(section)}><span>{section.contentType === 'documents' ? <Check size={11} /> : null}</span>{section.contentType === 'documents' ? 'Solo documentos' : 'Videos'}</button>
-                <span className="count-chip">{section.contentType === 'documents' ? `${documentCount} doc.` : `${count} video${count === 1 ? '' : 's'}`}</span>
+                <button type="button" className="section-files-button" onClick={() => { setOpenSectionId(section.id); setActiveTab('videos') }} aria-label={`Ver videos y documentos de ${section.name}`} title="Ver videos y documentos"><Eye size={17} /><span>{count} videos · {documentCount} docs</span></button>
                 <div className="order-buttons"><button disabled={index === 0} onClick={() => move(section.id, -1)}><ChevronLeft size={16} /></button><button disabled={index === sortedSections.length - 1} onClick={() => move(section.id, 1)}><ChevronRight size={16} /></button></div>
                 <div className="row-actions"><button onClick={() => { setEditingId(section.id); setEditingName(section.name) }}><Pencil size={16} /></button><button className="danger" onClick={() => onRemove(section.id)}><Trash2 size={16} /></button></div>
               </div>
@@ -1324,7 +1310,20 @@ function SectionsManager({ data, setData, saveState, onRemove, onNotify }) {
           {!sortedSections.length && <EmptyState icon={FolderCog} title="Aún no hay secciones" text="Crea la primera sección para organizar tus videos." />}
         </div>
       </section>
-      <div className="info-callout"><Lightbulb size={19} /><div><strong>Un menú distinto para cada rol</strong><p>Si desactivas una sección para un rol, desaparecerá por completo de su barra lateral. Los videos asignados allí tampoco serán visibles.</p></div></div>
+      {openSection && createPortal(
+        <div className="modal-overlay" onMouseDown={(event) => { if (event.target === event.currentTarget) setOpenSectionId(null) }}>
+          <div className="modal-panel section-content-modal" role="dialog" aria-modal="true" aria-label={`Archivos de ${openSection.name}`}>
+            <div className="modal-panel__head"><div><h2>{openSection.name}</h2><p>Videos y documentos relacionados con esta sección.</p></div><button type="button" className="icon-button" onClick={() => setOpenSectionId(null)} aria-label="Cerrar"><X size={19} /></button></div>
+            <div className="section-content-tabs" role="tablist" aria-label="Tipo de archivo">
+              <button type="button" role="tab" aria-selected={activeTab === 'videos'} className={activeTab === 'videos' ? 'active' : ''} onClick={() => setActiveTab('videos')}><Video size={16} /> Videos <span>{sectionVideos.length}</span></button>
+              <button type="button" role="tab" aria-selected={activeTab === 'documents'} className={activeTab === 'documents' ? 'active' : ''} onClick={() => setActiveTab('documents')}><FileText size={16} /> Documentos <span>{(data.documents || []).filter((document) => document.sectionId === openSection.id).length}</span></button>
+            </div>
+            <div className="modal-panel__body section-content-modal__body">
+              {activeTab === 'videos' ? <div className="section-content-videos"><div className="section-content-videos__heading"><p>Videos asignados a esta sección por cada rol.</p><button type="button" className="primary-button" onClick={() => { setOpenSectionId(null); onManageVideos(openSection.id) }}><Plus size={16} /> Agregar video</button></div>{sectionVideos.map((video) => <div className="section-content-video" key={video.id}><span><Film size={17} /></span><div><strong>{video.title}</strong><small>{Object.entries(video.assignments || {}).filter(([, id]) => id === openSection.id).map(([role]) => ROLE_META[role]?.label || role).join(' · ')}</small></div></div>)}{!sectionVideos.length && <EmptyState icon={Film} title="Aún no hay videos" text="Agrega un video y asígnalo a esta sección desde la biblioteca." />}</div> : <DocumentsManager data={data} setData={setData} onNotify={onNotify} sectionId={openSection.id} uploadsEnabled={saveState.status === 'saved'} />}
+            </div>
+          </div>
+        </div>, document.body)}
+      <div className="info-callout"><Lightbulb size={19} /><div><strong>Un menú distinto para cada rol</strong><p>Si desactivas una sección para un rol, desaparecerá de su barra lateral. Sus videos y documentos tampoco serán visibles para ese rol.</p></div></div>
     </div>
   )
 }
@@ -1339,12 +1338,14 @@ const emptyVideoDraft = {
   operatorEnabled: true,
   operatorSection: '',
   operatorLocked: false,
+  operatorPrerequisite: '',
   bossEnabled: false,
   bossSection: '',
   bossLocked: false,
+  bossPrerequisite: '',
 }
 
-function VideosManager({ data, setData, saveState, persistedVideoIdsRef, onNotify }) {
+function VideosManager({ data, setData, saveState, persistedVideoIdsRef, onNotify, initialSectionId = null }) {
   const [formOpen, setFormOpen] = useState(false)
   const [editingId, setEditingId] = useState(null)
   const [newVideoId, setNewVideoId] = useState(null)
@@ -1355,16 +1356,27 @@ function VideosManager({ data, setData, saveState, persistedVideoIdsRef, onNotif
   const quizEditorRef = useRef(null)
 
   const sectionsFor = (role) => [...data.sections]
-    .filter((section) => section.roles.includes(role) && section.contentType !== 'documents')
+    .filter((section) => section.roles.includes(role))
     .sort((a, b) => a.order - b.order)
 
-  const openNew = () => {
+  const openNew = (sectionId = null) => {
+    const selectedSection = data.sections.find((section) => section.id === sectionId)
     setEditingId(null)
     setNewVideoId(crypto.randomUUID())
     setError('')
-    setDraft({ ...emptyVideoDraft, operatorSection: sectionsFor('operator')[0]?.id || '', bossSection: sectionsFor('boss')[0]?.id || '' })
+    setDraft({
+      ...emptyVideoDraft,
+      operatorEnabled: selectedSection ? selectedSection.roles.includes('operator') : true,
+      operatorSection: selectedSection?.roles.includes('operator') ? selectedSection.id : sectionsFor('operator')[0]?.id || '',
+      bossEnabled: selectedSection ? selectedSection.roles.includes('boss') : false,
+      bossSection: selectedSection?.roles.includes('boss') ? selectedSection.id : sectionsFor('boss')[0]?.id || '',
+    })
     setFormOpen(true)
   }
+
+  useEffect(() => {
+    if (initialSectionId) openNew(initialSectionId)
+  }, [initialSectionId])
 
   const openEdit = (video) => {
     setEditingId(video.id)
@@ -1380,9 +1392,11 @@ function VideosManager({ data, setData, saveState, persistedVideoIdsRef, onNotif
       operatorEnabled: Boolean(video.assignments.operator),
       operatorSection: video.assignments.operator || sectionsFor('operator')[0]?.id || '',
       operatorLocked: Boolean(video.locked?.operator),
+      operatorPrerequisite: video.prerequisites?.operator || '',
       bossEnabled: Boolean(video.assignments.boss),
       bossSection: video.assignments.boss || sectionsFor('boss')[0]?.id || '',
       bossLocked: Boolean(video.locked?.boss),
+      bossPrerequisite: video.prerequisites?.boss || '',
     })
     setFormOpen(true)
     window.scrollTo({ top: 0, behavior: 'smooth' })
@@ -1412,6 +1426,9 @@ function VideosManager({ data, setData, saveState, persistedVideoIdsRef, onNotif
     const locked = {}
     if (draft.operatorEnabled && draft.operatorSection) locked.operator = draft.operatorLocked
     if (draft.bossEnabled && draft.bossSection) locked.boss = draft.bossLocked
+    const prerequisites = {}
+    if (assignments.operator && draft.operatorPrerequisite) prerequisites.operator = draft.operatorPrerequisite
+    if (assignments.boss && draft.bossPrerequisite) prerequisites.boss = draft.bossPrerequisite
     const payload = {
       title: draft.title.trim(),
       description: draft.description.trim(),
@@ -1421,11 +1438,15 @@ function VideosManager({ data, setData, saveState, persistedVideoIdsRef, onNotif
       featured: draft.featured,
       assignments,
       locked,
+      prerequisites,
     }
     if (!quizEditorRef.current?.validate()) return
     const videoId = editingId || newVideoId
     if (!videoId) return
     const currentVideo = editingId ? data.videos.find((video) => video.id === editingId) : null
+    const nextVideo = { ...currentVideo, ...payload, id: videoId }
+    const sequenceError = validateLearningSequence([...data.videos.filter((video) => video.id !== videoId), nextVideo], data.sections)
+    if (sequenceError) { setError(sequenceError); return }
     const videoChanged = !currentVideo || JSON.stringify({
       title: currentVideo.title,
       description: currentVideo.description,
@@ -1435,6 +1456,7 @@ function VideosManager({ data, setData, saveState, persistedVideoIdsRef, onNotif
       featured: Boolean(currentVideo.featured),
       assignments: currentVideo.assignments,
       locked: currentVideo.locked || {},
+      prerequisites: currentVideo.prerequisites || {},
     }) !== JSON.stringify(payload)
     if (editingId) {
       setData((current) => ({ ...current, videos: current.videos.map((video) => video.id === editingId ? { ...video, ...payload } : video) }))
@@ -1472,6 +1494,8 @@ function VideosManager({ data, setData, saveState, persistedVideoIdsRef, onNotif
   }, [closeForm, combinedSave, onNotify, persistedVideoIdsRef, saveState])
 
   const deleteVideo = (id) => {
+    const dependent = data.videos.find((video) => Object.values(video.prerequisites || {}).includes(id))
+    if (dependent) { onNotify?.(`Primero cambia el video previo de “${dependent.title}”.`, { tone: 'danger' }); return }
     const videoTitle = data.videos.find((video) => video.id === id)?.title || 'este video'
     if (!window.confirm(`¿Eliminar “${videoTitle}” de Supabase?`)) return
     setData((current) => ({ ...current, videos: current.videos.filter((video) => video.id !== id) }))
@@ -1510,11 +1534,17 @@ function VideosManager({ data, setData, saveState, persistedVideoIdsRef, onNotif
                 const enabledKey = role === 'operator' ? 'operatorEnabled' : 'bossEnabled'
                 const sectionKey = role === 'operator' ? 'operatorSection' : 'bossSection'
                 const lockedKey = role === 'operator' ? 'operatorLocked' : 'bossLocked'
+                const prerequisiteKey = role === 'operator' ? 'operatorPrerequisite' : 'bossPrerequisite'
+                const previousVideos = data.videos.filter((video) => {
+                  const source = getPersistedVideoSource(video)
+                  return video.id !== editingId && video.assignments?.[role] && video.quiz && (source.type === 'video' || ['youtube', 'vimeo'].includes(source.provider))
+                })
                 const enabled = draft[enabledKey]
                 return (
                   <div className={`assignment-card ${enabled ? 'enabled' : ''}`} key={role}>
                     <label className="switch-line"><span className="role-avatar">{ROLE_META[role].short}</span><div><strong>{ROLE_META[role].label}</strong><small>{enabled ? 'Puede ver este video' : 'Sin acceso'}</small></div><input type="checkbox" checked={enabled} onChange={(event) => setDraft({ ...draft, [enabledKey]: event.target.checked })} /><i /></label>
                     {enabled && <><div className="form-group"><label>Mostrar en la sección</label><select value={draft[sectionKey]} onChange={(event) => setDraft({ ...draft, [sectionKey]: event.target.value })}><option value="">Seleccionar…</option>{sectionsFor(role).map((section) => <option value={section.id} key={section.id}>{section.name}</option>)}</select></div><label className={`role-lock-toggle ${draft[lockedKey] ? 'is-locked' : ''}`}><input type="checkbox" checked={draft[lockedKey]} onChange={(event) => setDraft({ ...draft, [lockedKey]: event.target.checked })} /><span><LockKeyhole size={15} /></span><div><strong>Mostrar como bloqueado</strong><small>Verá la tarjeta, pero no podrá reproducir el video.</small></div><i /></label></>}
+                    {enabled && <div className="form-group learning-requirement"><label htmlFor={'prerequisite-' + role}>Video previo obligatorio</label><select id={'prerequisite-' + role} value={draft[prerequisiteKey] || ''} onChange={(event) => setDraft({ ...draft, [prerequisiteKey]: event.target.value })}><option value="">Sin requisito · video independiente</option>{previousVideos.map((video) => <option value={video.id} key={video.id}>{video.title}</option>)}</select><small>Para desbloquear este video hay que completar el anterior y aprobar su cuestionario. Solo aparecen videos con cuestionario y reproducción verificable.</small>{draft[lockedKey] && <small>El bloqueo manual seguirá activo aunque se complete el requisito.</small>}</div>}
                   </div>
                 )
               })}
@@ -1523,7 +1553,7 @@ function VideosManager({ data, setData, saveState, persistedVideoIdsRef, onNotif
           </form>
           {(editingId || newVideoId) && (
             <div className="quiz-panel-wrap">
-              <VideoQuizEditor ref={quizEditorRef} videoId={editingId || newVideoId} videoPending={!persistedVideoIdsRef.current.has(editingId || newVideoId)} hideSaveAction />
+              <VideoQuizEditor ref={quizEditorRef} videoId={editingId || newVideoId} videoPending={!persistedVideoIdsRef.current.has(editingId || newVideoId)} hideSaveAction onSaved={(quiz) => setData((current) => ({ ...current, videos: current.videos.map((video) => video.id === (editingId || newVideoId) ? { ...video, quiz } : video) }))} />
             </div>
           )}
           <div className="video-save-floating">
@@ -1537,7 +1567,7 @@ function VideosManager({ data, setData, saveState, persistedVideoIdsRef, onNotif
       <section className="panel manager-panel">
         <div className="manager-toolbar">
           <div><h2>Biblioteca organizada</h2><p>{data.videos.length} contenidos clasificados por audiencia</p></div>
-          <div className="toolbar-actions"><label className="search-field"><Search size={17} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Buscar video…" /></label><button className="primary-button" onClick={openNew}><Plus size={17} /> Agregar video</button></div>
+          <div className="toolbar-actions"><label className="search-field"><Search size={17} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Buscar video…" /></label><button className="primary-button" onClick={() => openNew()}><Plus size={17} /> Agregar video</button></div>
         </div>
         <div className="video-library-groups">
           {visibleLibraryGroups.map((group) => (
@@ -1568,11 +1598,13 @@ function emptyQuizQuestion() {
   }
 }
 
-const VideoQuizEditor = forwardRef(function VideoQuizEditor({ videoId, videoPending, hideSaveAction = false }, ref) {
+const VideoQuizEditor = forwardRef(function VideoQuizEditor({ videoId, videoPending, hideSaveAction = false, onSaved }, ref) {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [saving, setSaving] = useState(false)
   const [passingScorePercent, setPassingScorePercent] = useState(70)
+  const [maxAttempts, setMaxAttempts] = useState(3)
+  const [savedMaxAttempts, setSavedMaxAttempts] = useState(3)
   const [questions, setQuestions] = useState([])
   const [hasQuiz, setHasQuiz] = useState(false)
   const [savedNote, setSavedNote] = useState('')
@@ -1588,10 +1620,14 @@ const VideoQuizEditor = forwardRef(function VideoQuizEditor({ videoId, videoPend
         if (quiz && quiz.questions.length) {
           setHasQuiz(true)
           setPassingScorePercent(quiz.passingScorePercent)
+          setMaxAttempts(quiz.maxAttempts)
+          setSavedMaxAttempts(quiz.maxAttempts)
           setQuestions(quiz.questions)
         } else {
           setHasQuiz(false)
           setPassingScorePercent(70)
+          setMaxAttempts(3)
+          setSavedMaxAttempts(3)
           setQuestions([])
         }
       })
@@ -1654,11 +1690,11 @@ const VideoQuizEditor = forwardRef(function VideoQuizEditor({ videoId, videoPend
     if (!validate()) return false
     if (videoPending) { setError('Espera a que el video termine de guardarse antes de agregar su cuestionario.'); return false }
     if (!questions.length) return true
-    const actionLabel = editingUser ? 'guardar los cambios de este usuario' : 'crear este usuario'
-    if (!window.confirm(`¿Confirmas que deseas ${actionLabel}?`)) return
     setSaving(true)
     try {
-      await saveVideoQuiz(videoId, { passingScorePercent, questions })
+      await saveVideoQuiz(videoId, { passingScorePercent, questions, maxAttempts })
+      setSavedMaxAttempts(maxAttempts)
+      onSaved?.({ passingScorePercent, questionCount: questions.length, maxAttempts })
       setHasQuiz(true)
       setSavedNote('Cuestionario guardado.')
       window.setTimeout(() => setSavedNote(''), 2500)
@@ -1679,6 +1715,7 @@ const VideoQuizEditor = forwardRef(function VideoQuizEditor({ videoId, videoPend
     setError('')
     try {
       await deleteVideoQuiz(videoId)
+      onSaved?.(null)
       setHasQuiz(false)
       setQuestions([])
     } catch (deleteError) {
@@ -1725,6 +1762,8 @@ const VideoQuizEditor = forwardRef(function VideoQuizEditor({ videoId, videoPend
         <input type="number" min="1" max="100" value={passingScorePercent} onChange={(event) => setPassingScorePercent(Math.min(100, Math.max(1, Number(event.target.value) || 1)))} />
       </div>
 
+      <div className="form-group quiz-panel__passing"><label>Intentos iniciales por usuario</label><input type="number" min="1" max="20" value={maxAttempts} onChange={(event) => setMaxAttempts(Math.min(20, Math.max(1, Number(event.target.value) || 1)))} /><small>Al agotarlos, habilita un intento adicional para ese usuario aquí. Cambiar el límite afecta a todos; los intentos anteriores se conservan.</small></div>
+      {hasQuiz && !videoPending && <QuizAttemptsManager videoId={videoId} maxAttempts={savedMaxAttempts} />}
       {error && <p className="form-error">{error}</p>}
       {savedNote && <p className="quiz-saved-note">{savedNote}</p>}
 
@@ -1801,7 +1840,7 @@ function UsersManager({ onCreateUser, onUpdateUser, onNotify }) {
 
   const openEdit = (user) => {
     setEditingUser(user)
-    setDraft({ username: user.username, displayName: user.displayName, role: user.role, password: '', jobTitle: user.jobTitle || '', department: user.department || '' })
+    setDraft({ username: user.username, displayName: user.displayName, role: user.role, password: '', jobTitle: user.jobTitle || '', department: user.department || '', requireQuizPhotoOverride: user.requireQuizPhotoOverride })
     setError('')
     setFormOpen(true)
   }
@@ -1810,6 +1849,13 @@ function UsersManager({ onCreateUser, onUpdateUser, onNotify }) {
     setFormOpen(false)
     setEditingUser(null)
   }
+
+  useEffect(() => {
+    if (!formOpen) return undefined
+    const onKeyDown = (event) => { if (event.key === 'Escape' && !saving) closeForm() }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [formOpen, saving])
 
   const submit = async (event) => {
     event.preventDefault()
@@ -1854,6 +1900,7 @@ function UsersManager({ onCreateUser, onUpdateUser, onNotify }) {
           newPassword: draft.password || undefined,
           jobTitle,
           department,
+          ...(editingUser.username === 'invitado.nissei' ? { requireQuizPhotoOverride: draft.requireQuizPhotoOverride ?? null } : {}),
         })
       } else {
         await onCreateUser({ username, password: draft.password, role: draft.role, displayName, jobTitle, department })
@@ -1888,17 +1935,25 @@ function UsersManager({ onCreateUser, onUpdateUser, onNotify }) {
         </div>
 
         {formOpen && (
-          <form className="inline-form inline-form--wrap" onSubmit={submit}>
+          <div className="modal-overlay" onMouseDown={(event) => { if (event.target === event.currentTarget && !saving) closeForm() }}>
+          <div className="modal-panel user-edit-modal" role="dialog" aria-modal="true" aria-labelledby="user-edit-title">
+            <div className="modal-panel__head"><div><h2 id="user-edit-title">{editingUser ? 'Editar usuario' : 'Nuevo usuario'}</h2><p>{editingUser ? `@${editingUser.username} · Modifica sus datos y permisos.` : 'Completa los datos de la nueva cuenta.'}</p></div><button type="button" className="icon-button" onClick={closeForm} disabled={saving} aria-label="Cerrar"><X size={19} /></button></div>
+          <form className="user-edit-modal__form" onSubmit={submit}>
+            <div className="modal-panel__body user-edit-modal__fields">
             <div className="form-group"><label>Usuario</label><input value={draft.username} onChange={(event) => setDraft({ ...draft, username: event.target.value })} placeholder="ej. jperez" disabled={!!editingUser} autoFocus={!editingUser} /></div>
             <div className="form-group grow"><label>Nombre completo</label><input value={draft.displayName} onChange={(event) => setDraft({ ...draft, displayName: event.target.value })} placeholder="Nombre completo" /></div>
             <div className="form-group"><label>Rol</label><select value={draft.role} onChange={(event) => setDraft({ ...draft, role: event.target.value })}><option value="operator">Operante</option><option value="boss">Jefe</option></select></div>
             <div className="form-group grow"><label>Cargo</label><input value={draft.jobTitle} onChange={(event) => setDraft({ ...draft, jobTitle: event.target.value })} placeholder="ej. Supervisor de bodega" /></div>
             <div className="form-group grow"><label>Área</label><input value={draft.department} onChange={(event) => setDraft({ ...draft, department: event.target.value })} placeholder="ej. Logística" /></div>
+            {editingUser?.username === 'invitado.nissei' && <div className="form-group grow"><label>Foto al iniciar cuestionarios</label><select value={draft.requireQuizPhotoOverride == null ? 'default' : String(draft.requireQuizPhotoOverride)} onChange={(event) => setDraft({ ...draft, requireQuizPhotoOverride: event.target.value === 'default' ? null : event.target.value === 'true' })}><option value="default">Usar configuración general</option><option value="true">Solicitar foto</option><option value="false">No solicitar foto</option></select><small>Este ajuste se aplica solo al usuario invitado.</small></div>}
             <div className="form-group"><label>{editingUser ? 'Nueva contraseña' : 'Contraseña'}</label><input type="password" value={draft.password} onChange={(event) => setDraft({ ...draft, password: event.target.value })} placeholder={editingUser ? 'Dejar en blanco para no cambiar' : '••••••••'} autoComplete="new-password" /></div>
-            <button className="primary-button form-submit" type="submit" disabled={saving}>{saving ? 'Guardando…' : editingUser ? 'Guardar cambios' : 'Crear usuario'}</button>
+            </div>
+            {error && <p className="form-error form-error--box user-edit-modal__error" role="alert">{error}</p>}
+            <div className="user-edit-modal__actions"><button type="button" className="secondary-button" onClick={closeForm} disabled={saving}>Cancelar</button><button className="primary-button" type="submit" disabled={saving}>{saving ? 'Guardando…' : editingUser ? 'Guardar cambios' : 'Crear usuario'}</button></div>
           </form>
+          </div>
+          </div>
         )}
-        {error && <p className="form-error form-error--box access-error">{error}</p>}
 
         <div className="user-list">
           <div className="user-list__head"><span>Usuario</span><span>Rol</span><span>Estado</span><span>Acciones</span></div>
@@ -2370,20 +2425,20 @@ function RolePreview({ data }) {
   const [selectedDocument, setSelectedDocument] = useState(null)
   const [query, setQuery] = useState('')
   const [navOpen, setNavOpen] = useState(false)
+  const previewVideos = useMemo(() => withLearningAccess(data.videos.map((video) => ({ ...video, watched: false, quizResult: null })), data.sections, role), [data.videos, data.sections, role])
   useEffect(() => {
     if (!selectedVideo) return
-    const freshVideo = data.videos.find((video) => video.id === selectedVideo.id)
+    const freshVideo = previewVideos.find((video) => video.id === selectedVideo.id)
     if (!freshVideo || !isVideoAssignedTo(freshVideo, role) || isVideoLockedFor(freshVideo, role)) {
       setSelectedVideo(null)
     } else if (freshVideo !== selectedVideo) {
       setSelectedVideo(freshVideo)
     }
-  }, [data.videos, role, selectedVideo])
+  }, [previewVideos, role, selectedVideo])
   const sections = useMemo(() => [...data.sections].filter((section) => section.roles.includes(role)).sort((a, b) => a.order - b.order), [data.sections, role])
-  const visibleSectionIds = new Set(sections.filter((section) => section.contentType !== 'documents').map((section) => section.id))
-  const videos = data.videos.filter((video) => visibleSectionIds.has(video.assignments[role]))
-  const visibleDocumentSectionIds = new Set(sections.filter((section) => section.contentType === 'documents').map((section) => section.id))
-  const documents = (data.documents || []).filter((document) => visibleDocumentSectionIds.has(document.sectionId))
+  const visibleSectionIds = new Set(sections.map((section) => section.id))
+  const videos = previewVideos.filter((video) => visibleSectionIds.has(video.assignments[role]))
+  const documents = (data.documents || []).filter((document) => visibleSectionIds.has(document.sectionId) && (!document.audience || document.audience === 'both' || document.audience === role))
   const blockedVideos = videos.filter((video) => isVideoLockedFor(video, role))
   const availableVideos = videos.filter((video) => !isVideoLockedFor(video, role))
   const activeSectionData = sections.find((section) => section.id === activeSection)
@@ -2436,7 +2491,7 @@ function RolePreview({ data }) {
               <small className="sidebar-label">EXPLORAR</small>
               <button className={activeSection === 'home' ? 'active' : ''} onClick={() => navigate('home')}><Home size={18} /><span>Inicio</span></button>
               <small className="sidebar-label sidebar-label--spaced">MI CONTENIDO</small>
-              {sections.map((section) => { const isDocuments = section.contentType === 'documents'; const Icon = isDocuments ? FileText : (ICONS[section.icon] || Layers3); const count = isDocuments ? documents.filter((document) => document.sectionId === section.id).length : videos.filter((video) => video.assignments[role] === section.id).length; return <button className={activeSection === section.id ? 'active' : ''} onClick={() => navigate(section.id)} key={section.id}><Icon size={18} /><span>{section.name}</span><small>{count}</small></button> })}
+              {sections.map((section) => { const Icon = ICONS[section.icon] || Layers3; const count = documents.filter((document) => document.sectionId === section.id).length + videos.filter((video) => video.assignments[role] === section.id).length; return <button className={activeSection === section.id ? 'active' : ''} onClick={() => navigate(section.id)} key={section.id}><Icon size={18} /><span>{section.name}</span><small>{count}</small></button> })}
             </nav>
             <div className="sidebar-help"><span><CircleHelp size={16} /></span><div><strong>¿Necesitas ayuda?</strong><small>{data.settings?.supportMessage || 'Contacta a tu administrador'}</small></div></div>
             <div className="role-preview-sidebar-foot"><Eye size={15} /> Vista simulada</div>
@@ -2452,13 +2507,11 @@ function RolePreview({ data }) {
               {selectedDocument ? (
                 <DocumentViewerPage document={selectedDocument} onBack={() => setSelectedDocument(null)} />
               ) : selectedVideo ? (
-                <VideoPlayerPage video={selectedVideo} role={role} data={data} onBack={() => setSelectedVideo(null)} onPlay={openVideo} />
+                <VideoPlayerPage key={selectedVideo.id} video={selectedVideo} role={role} data={{ ...data, videos: previewVideos }} onBack={() => setSelectedVideo(null)} onPlay={openVideo} />
               ) : activeSection === 'home' && !query ? (
                 <ViewerHome role={role} settings={data.settings} videos={videos} documents={documents} sections={sections} featured={featured} lockedCount={blockedVideos.length} onPlay={openVideo} onSection={navigate} />
-              ) : activeSectionData?.contentType === 'documents' || (activeSection === 'home' && query && filteredDocuments.length) ? (
-                <DocumentListing title={activeSection === 'home' ? 'Resultados de documentos' : activeSectionData?.name || 'Documentos'} subtitle="Documentos disponibles para consulta" documents={filteredDocuments} onOpen={setSelectedDocument} />
               ) : (
-                <VideoListing role={role} title={activeSection === 'home' ? 'Resultados de búsqueda' : activeSectionData?.name || 'Videos'} subtitle={query ? `Resultados para “${query}”` : 'Contenido seleccionado para este perfil'} videos={filtered} onPlay={openVideo} />
+                <SectionMediaListing key={activeSection} role={role} title={activeSection === 'home' ? 'Resultados de búsqueda' : activeSectionData?.name || 'Archivos'} subtitle={query ? `Resultados para “${query}”` : 'Contenido seleccionado para este perfil'} videos={filtered} documents={filteredDocuments} onPlay={openVideo} onOpenDocument={setSelectedDocument} />
               )}
             </main>
           </section>
@@ -2469,19 +2522,19 @@ function RolePreview({ data }) {
   )
 }
 
-function ViewerApp({ role, userId, data, theme, toggleTheme, onLogout }) {
+function ViewerApp({ role, userId, data, theme, toggleTheme, onLogout, onRefresh }) {
   const [completedVideoIds, setCompletedVideoIds] = useState(() => new Set())
   const sections = useMemo(() => [...data.sections].filter((section) => section.roles.includes(role)).sort((a, b) => a.order - b.order), [data.sections, role])
   const targetedVideos = useMemo(() => {
-    const visibleSectionIds = new Set(sections.filter((section) => section.contentType !== 'documents').map((section) => section.id))
+    const visibleSectionIds = new Set(sections.map((section) => section.id))
     return data.videos
       .filter((video) => visibleSectionIds.has(video.assignments[role]))
       .map((video) => completedVideoIds.has(video.id) && !video.watched ? { ...video, watched: true } : video)
   }, [completedVideoIds, data.videos, role, sections])
   const targetedDocuments = useMemo(() => {
-    const visibleSectionIds = new Set(sections.filter((section) => section.contentType === 'documents').map((section) => section.id))
-    return (data.documents || []).filter((document) => visibleSectionIds.has(document.sectionId))
-  }, [data.documents, sections])
+    const visibleSectionIds = new Set(sections.map((section) => section.id))
+    return (data.documents || []).filter((document) => visibleSectionIds.has(document.sectionId) && (!document.audience || document.audience === 'both' || document.audience === role))
+  }, [data.documents, role, sections])
   const playableVideos = useMemo(() => targetedVideos.filter((video) => !isVideoLockedFor(video, role)), [role, targetedVideos])
   const [activeSection, setActiveSection] = useState('home')
   const [selectedVideo, setSelectedVideo] = useState(null)
@@ -2559,7 +2612,7 @@ function ViewerApp({ role, userId, data, theme, toggleTheme, onLogout }) {
           <small className="sidebar-label">EXPLORAR</small>
           <button className={activeSection === 'home' ? 'active' : ''} onClick={() => navigate('home')} title={sidebarCollapsed ? 'Inicio' : undefined}><Home size={19} /><span>Inicio</span></button>
           <small className="sidebar-label sidebar-label--spaced">MI CONTENIDO</small>
-          {sections.map((section) => { const Icon = section.contentType === 'documents' ? FileText : (ICONS[section.icon] || Layers3); const count = section.contentType === 'documents' ? targetedDocuments.filter((document) => document.sectionId === section.id).length : targetedVideos.filter((video) => video.assignments[role] === section.id).length; return <button className={activeSection === section.id ? 'active' : ''} onClick={() => navigate(section.id)} title={sidebarCollapsed ? section.name : undefined} key={section.id}><Icon size={19} /><span>{section.name}</span><small>{count}</small></button> })}
+          {sections.map((section) => { const Icon = ICONS[section.icon] || Layers3; const count = targetedDocuments.filter((document) => document.sectionId === section.id).length + targetedVideos.filter((video) => video.assignments[role] === section.id).length; return <button className={activeSection === section.id ? 'active' : ''} onClick={() => navigate(section.id)} title={sidebarCollapsed ? section.name : undefined} key={section.id}><Icon size={19} /><span>{section.name}</span><small>{count}</small></button> })}
         </nav>
         <div className="sidebar-help"><span><CircleHelp size={17} /></span><div><strong>¿Necesitas ayuda?</strong><small>{data.settings?.supportMessage || 'Contacta a tu administrador'}</small></div></div>
         <div className="sidebar__bottom">{data.settings?.allowLightMode !== false && <ThemeToggle theme={theme} onToggle={toggleTheme} />}<button className="sidebar-action" onClick={onLogout} title={sidebarCollapsed ? 'Cerrar sesión' : undefined}><LogOut size={18} /><span>Cerrar sesión</span></button></div>
@@ -2576,13 +2629,11 @@ function ViewerApp({ role, userId, data, theme, toggleTheme, onLogout }) {
           {selectedDocument ? (
             <DocumentViewerPage document={selectedDocument} onBack={() => setSelectedDocument(null)} />
           ) : selectedVideo ? (
-            <VideoPlayerPage video={selectedVideo} role={role} userId={userId} data={data} onBack={() => setSelectedVideo(null)} onPlay={openVideo} onCompleted={markVideoCompleted} />
+            <VideoPlayerPage key={selectedVideo.id} video={selectedVideo} role={role} userId={userId} data={data} onBack={() => setSelectedVideo(null)} onPlay={openVideo} onCompleted={markVideoCompleted} onRefresh={onRefresh} />
           ) : activeSection === 'home' && !query ? (
             <ViewerHome role={role} settings={data.settings} videos={targetedVideos} documents={targetedDocuments} sections={sections} featured={featured} lockedCount={lockedCount} onPlay={openVideo} onSection={navigate} />
-          ) : activeSectionData?.contentType === 'documents' || (activeSection === 'home' && query && filteredDocuments.length) ? (
-            <DocumentListing title={activeSection === 'home' ? 'Resultados de documentos' : activeSectionData?.name || 'Documentos'} subtitle={query ? `Resultados para “${query}”` : 'Documentos disponibles para consulta'} documents={filteredDocuments} onOpen={openDocument} />
           ) : (
-            <VideoListing role={role} title={activeSection === 'home' ? 'Resultados de búsqueda' : activeSectionData?.name || 'Videos'} subtitle={query ? `Resultados para “${query}”` : 'Contenido seleccionado para tu perfil'} videos={filtered} onPlay={openVideo} />
+            <SectionMediaListing key={activeSection} role={role} title={activeSection === 'home' ? 'Resultados de búsqueda' : activeSectionData?.name || 'Archivos'} subtitle={query ? `Resultados para “${query}”` : 'Contenido seleccionado para tu perfil'} videos={filtered} documents={filteredDocuments} onPlay={openVideo} onOpenDocument={openDocument} />
           )}
         </main>
       </section>
@@ -2606,9 +2657,24 @@ function ViewerHome({ role, settings, videos, documents, sections, featured, loc
       )}
       <div className="viewer-section-heading"><div><span className="eyebrow eyebrow--plain">RECIENTES</span><h2>Continúa explorando</h2></div><span>{availableCount} disponibles{lockedCount ? ` · ${lockedCount} bloqueados` : ''}</span></div>
       <div className="viewer-video-grid">{recent.slice(0, 6).map((video) => <ViewerVideoCard role={role} video={video} section={sections.find((item) => item.id === video.assignments[role])} onPlay={() => onPlay(video)} key={video.id} />)}</div>
-      {!videos.length && <EmptyState icon={Film} title="Todavía no hay contenido" text="El administrador aún no ha habilitado videos para tu perfil." />}
-      <section className="category-strip"><div className="viewer-section-heading"><div><span className="eyebrow eyebrow--plain">SECCIONES</span><h2>Explora por categoría</h2></div></div><div className="category-grid">{sections.map((section) => { const isDocuments = section.contentType === 'documents'; const Icon = isDocuments ? FileText : (ICONS[section.icon] || Layers3); const count = isDocuments ? documents.filter((document) => document.sectionId === section.id).length : videos.filter((video) => video.assignments[role] === section.id).length; return <button onClick={() => onSection(section.id)} key={section.id}><span><Icon size={20} /></span><div><strong>{section.name}</strong><small>{count} {isDocuments ? (count === 1 ? 'documento' : 'documentos') : (count === 1 ? 'video' : 'videos')}</small></div><ChevronRight size={17} /></button> })}</div></section>
+      {!videos.length && !documents.length && <EmptyState icon={Film} title="Todavía no hay contenido" text="El administrador aún no ha habilitado archivos para tu perfil." />}
+      <section className="category-strip"><div className="viewer-section-heading"><div><span className="eyebrow eyebrow--plain">SECCIONES</span><h2>Explora por categoría</h2></div></div><div className="category-grid">{sections.map((section) => { const Icon = ICONS[section.icon] || Layers3; const videoCount = videos.filter((video) => video.assignments[role] === section.id).length; const documentCount = documents.filter((document) => document.sectionId === section.id).length; return <button onClick={() => onSection(section.id)} key={section.id}><span><Icon size={20} /></span><div><strong>{section.name}</strong><small>{videoCount} videos · {documentCount} documentos</small></div><ChevronRight size={17} /></button> })}</div></section>
       {lockedCount > 0 && <div className="locked-notice"><LockKeyhole size={18} /><div><strong>Contenido bloqueado por el administrador</strong><p>{lockedCount} {lockedCount === 1 ? 'video aparece bloqueado' : 'videos aparecen bloqueados'} en tu biblioteca. Puedes identificarlos, pero no abrirlos ni reproducirlos.</p></div></div>}
+    </div>
+  )
+}
+
+function SectionMediaListing({ role, title, subtitle, videos, documents, onPlay, onOpenDocument }) {
+  const [tab, setTab] = useState(documents.length && !videos.length ? 'documents' : 'videos')
+  return (
+    <div>
+      <div className="section-content-tabs viewer-media-tabs" role="tablist" aria-label="Contenido de la sección">
+        <button type="button" role="tab" aria-selected={tab === 'videos'} className={tab === 'videos' ? 'active' : ''} onClick={() => setTab('videos')}><Video size={16} /> Videos <span>{videos.length}</span></button>
+        <button type="button" role="tab" aria-selected={tab === 'documents'} className={tab === 'documents' ? 'active' : ''} onClick={() => setTab('documents')}><FileText size={16} /> Documentos <span>{documents.length}</span></button>
+      </div>
+      {tab === 'videos'
+        ? <VideoListing role={role} title={title} subtitle={subtitle} videos={videos} onPlay={onPlay} />
+        : <DocumentListing title={title} subtitle={subtitle} documents={documents} onOpen={onOpenDocument} />}
     </div>
   )
 }
@@ -2697,7 +2763,7 @@ function ViewerVideoCard({ role, video, section, onPlay }) {
       <div className="viewer-video-card__body">
         {section && <span>{section.name}</span>}
         <h3>{video.title}</h3>
-        <p>{locked ? 'El administrador mantiene este contenido bloqueado para tu rol.' : video.description}</p>
+        <p>{locked ? (video.locked?.[role] ? 'El administrador mantiene este contenido bloqueado para tu rol.' : video.lockReasons?.[role]) : video.description}</p>
         {!locked && (watched || quizPending) && (
           <div className="viewer-video-card__badges">
             {watched && <span className="watched-badge"><CircleCheck size={11} /> Visto</span>}
@@ -2750,6 +2816,10 @@ function VideoPlayerMedia({ source, title, video, userId, onCompleted }) {
     ? 'video-frame video-frame--google-drive'
     : 'video-frame'
 
+  const [progressError, setProgressError] = useState('')
+  const pendingProgressRef = useRef(null)
+  const onCompletedRef = useRef(onCompleted)
+  onCompletedRef.current = onCompleted
   const maxProgressRef = useRef(0)
   const lastReportedRef = useRef(0)
   const completedNotifiedRef = useRef(false)
@@ -2777,22 +2847,27 @@ function VideoPlayerMedia({ source, title, video, userId, onCompleted }) {
   const notifyCompleted = useCallback(() => {
     if (completedNotifiedRef.current) return
     completedNotifiedRef.current = true
-    onCompleted?.()
-  }, [onCompleted])
+    onCompletedRef.current?.()
+  }, [])
 
   const reportProgress = useCallback((seconds, { ended = false } = {}) => {
     if (!userId || !video?.id) return
     lastReportedRef.current = seconds
+    if (!pendingProgressRef.current?.ended || ended) pendingProgressRef.current = { seconds, ended }
     recordVideoProgress({
       videoId: video.id,
       userId,
       progressSeconds: seconds,
       durationSeconds: realDurationRef.current || undefined,
       ended,
+    }).then((progress) => {
+      setProgressError('')
+      if (progress?.completed) notifyCompleted()
     }).catch(() => {
-      // El progreso es informativo; un fallo de red no debe interrumpir la reproducción.
+      if (ended) completionReportedRef.current = false
+      setProgressError('No se pudo guardar tu avance. Reintenta para habilitar el cuestionario.')
     })
-  }, [userId, video?.id])
+  }, [userId, video?.id, notifyCompleted])
 
   const capturePlaybackSample = useCallback((seconds, duration, playbackRate = 1) => {
     if (!Number.isFinite(seconds) || seconds < 0) return coveredSecondsRef.current.size
@@ -2888,7 +2963,7 @@ function VideoPlayerMedia({ source, title, video, userId, onCompleted }) {
                   ) {
                     completionReportedRef.current = true
                     reportProgress(coveredSeconds, { ended: true })
-                    notifyCompleted()
+
                   }
                 }
               }, YOUTUBE_PROGRESS_POLL_MS)
@@ -2903,7 +2978,7 @@ function VideoPlayerMedia({ source, title, video, userId, onCompleted }) {
                 if (!completionReportedRef.current && hasFullPlaybackCoverage(realDurationRef.current)) {
                   completionReportedRef.current = true
                   reportProgress(coveredSecondsRef.current.size, { ended: true })
-                  notifyCompleted()
+
                 } else if (!completionReportedRef.current) {
                   reportProgress(coveredSecondsRef.current.size)
                 }
@@ -2937,14 +3012,14 @@ function VideoPlayerMedia({ source, title, video, userId, onCompleted }) {
         if (!completionReportedRef.current && Number.isFinite(percent) && percent >= 0.995 && hasFullPlaybackCoverage(duration)) {
           completionReportedRef.current = true
           reportProgress(coveredSeconds, { ended: true })
-          notifyCompleted()
+
         }
       }
       const handleVimeoEnded = ({ seconds, duration } = {}) => {
         if (!completionReportedRef.current && hasFullPlaybackCoverage(duration || realDurationRef.current)) {
           completionReportedRef.current = true
           reportProgress(coveredSecondsRef.current.size, { ended: true })
-          notifyCompleted()
+
         } else if (!completionReportedRef.current) {
           reportProgress(coveredSecondsRef.current.size)
         }
@@ -2962,27 +3037,13 @@ function VideoPlayerMedia({ source, title, video, userId, onCompleted }) {
       }
     }
 
-    // Google Drive y Loom no exponen una API de progreso equivalente para su
-    // vista previa incrustada. Se aproxima el avance con el tiempo real que el
-    // reproductor permanece visible y la pestaña está activa.
-    const interval = window.setInterval(() => {
-      if (document.visibilityState !== 'visible') return
-      const nextProgress = maxProgressRef.current + 1
-      trackMaxProgress(nextProgress)
-      const knownDuration = labelDurationSecondsRef.current
-      if (knownDuration && nextProgress >= knownDuration) notifyCompleted()
-      if (nextProgress - lastReportedRef.current >= PROGRESS_REPORT_INTERVAL_SECONDS) reportProgress(nextProgress)
-    }, 1000)
-
-    return () => {
-      window.clearInterval(interval)
-        if (coveredSecondsRef.current.size > lastReportedRef.current) reportProgress(coveredSecondsRef.current.size)
-    }
+    // Providers without playback events cannot confirm a completed lesson.
+    return undefined
   }, [video?.id, userId, source.type, source.provider, source.embedUrl, title, youtubeElementId, capturePlaybackSample, hasFullPlaybackCoverage, reportProgress, resetPlaybackSample, trackMaxProgress, notifyCompleted])
 
   const captureRealDuration = (element) => {
     if (Number.isFinite(element.duration) && element.duration > 0) {
-      realDurationRef.current = Math.round(element.duration)
+      realDurationRef.current = element.duration
     }
   }
 
@@ -3005,13 +3066,14 @@ function VideoPlayerMedia({ source, title, video, userId, onCompleted }) {
     const duration = realDurationRef.current || event.currentTarget.duration
     if (hasFullPlaybackCoverage(duration)) {
       reportProgress(coveredSecondsRef.current.size, { ended: true })
-      notifyCompleted()
+
     } else {
       reportProgress(coveredSecondsRef.current.size)
     }
   }
 
   return (
+    <>
     <div className={frameClassName} data-player-mode={source.type}>
       {source.type === 'video' ? (
         <video
@@ -3039,12 +3101,22 @@ function VideoPlayerMedia({ source, title, video, userId, onCompleted }) {
         <div className="video-error"><Film size={32} /><p>No se pudo cargar este enlace.</p></div>
       )}
     </div>
+    {progressError && <div className="learning-notice" role="alert">{progressError}<button className="secondary-button" type="button" onClick={() => { const pending = pendingProgressRef.current; if (pending) reportProgress(pending.seconds, { ended: pending.ended }) }}>Guardar avance</button></div>}
+    {userId && source.type === 'iframe' && !['youtube', 'vimeo'].includes(source.provider) && <p className="learning-notice">Este reproductor no permite confirmar el video completo. El administrador debe usar YouTube, Vimeo o un archivo de video para habilitar su cuestionario y la continuación.</p>}
+    </>
   )
 }
 
-function VideoPlayerPage({ video, role, userId, data, onBack, onPlay, onCompleted }) {
+function VideoPlayerPage({ video, role, userId, data, onBack, onPlay, onCompleted, onRefresh }) {
   const [justCompleted, setJustCompleted] = useState(false)
-  useEffect(() => { setJustCompleted(false) }, [video.id])
+  const [justPassed, setJustPassed] = useState(false)
+  const [refreshError, setRefreshError] = useState('')
+  useEffect(() => { setJustCompleted(false); setJustPassed(false); setRefreshError('') }, [video.id])
+  const refreshProgress = async (result) => {
+    if (result?.passed) setJustPassed(true)
+    try { await onRefresh?.(); setRefreshError('') }
+    catch { setRefreshError('Tu resultado se guardó. Falta actualizar los videos disponibles.') }
+  }
 
   if (!isVideoAssignedTo(video, role) || isVideoLockedFor(video, role)) {
     return <div className="player-page"><button className="back-button" onClick={onBack}><ArrowLeft size={17} /> Volver a la biblioteca</button><div className="player-blocked-state"><span><LockKeyhole size={28} /></span><h2>Este video está bloqueado</h2><p>El administrador no ha habilitado su reproducción para tu rol.</p></div></div>
@@ -3054,8 +3126,9 @@ function VideoPlayerPage({ video, role, userId, data, onBack, onPlay, onComplete
   const related = data.videos.filter((item) => item.id !== video.id && item.assignments[role] === video.assignments[role] && !isVideoLockedFor(item, role)).slice(0, 3)
   const isWatched = Boolean(video.watched) || justCompleted
   const hasQuiz = Boolean(video.quiz)
-  const quizPassed = Boolean(video.quizResult?.passed)
+  const quizPassed = Boolean(video.quizResult?.passed) || justPassed
   const showQuiz = hasQuiz && !quizPassed
+  const nextVideos = data.videos.filter((item) => item.prerequisites?.[role] === video.id)
   return (
     <div className="player-page">
       <button className="back-button" onClick={onBack}><ArrowLeft size={17} /> Volver a la biblioteca</button>
@@ -3072,15 +3145,18 @@ function VideoPlayerPage({ video, role, userId, data, onBack, onPlay, onComplete
             </div>
             <h1>{video.title}</h1><p>{video.description}</p>
           </div>
-          {showQuiz && <PlayerQuiz video={video} userId={userId} organizationId={data.organizationId} requirePhoto={Boolean(data.settings?.requireQuizPhoto)} isWatched={isWatched} />}
+          {showQuiz && userId && <PlayerQuiz key={video.id} onResult={refreshProgress} video={video} userId={userId} organizationId={data.organizationId} requirePhoto={Boolean(data.settings?.requireQuizPhoto)} isWatched={isWatched} />}
         </div>
-        <aside className="related-panel"><span className="eyebrow eyebrow--plain">A CONTINUACIÓN</span><h3>En esta sección</h3>{related.map((item) => <button key={item.id} onClick={() => onPlay(item)}><span><Play size={13} fill="currentColor" /></span><div><strong>{item.title}</strong><small>{item.duration}</small></div></button>)}{!related.length && <p>No hay más videos en esta sección.</p>}<div className="privacy-mini"><ShieldCheck size={17} /><span>Contenido autorizado para {ROLE_META[role].label}</span></div></aside>
+        <aside className="related-panel">
+          {nextVideos.length > 0 && <div className="learning-next"><h3>Continúa tu formación</h3>{nextVideos.map((item) => <div key={item.id}><strong>{item.title}</strong><p>{isVideoLockedFor(item, role) ? (item.locked?.[role] ? 'Bloqueado por el administrador.' : item.lockReasons?.[role]) : 'Requisito completado. Ya puedes continuar.'}</p><button type="button" disabled={isVideoLockedFor(item, role)} onClick={() => onPlay(item)}><Play size={14} /> Continuar con este video</button></div>)}</div>}
+          {refreshError && <div className="learning-notice" role="alert">{refreshError}<button type="button" onClick={() => refreshProgress()}>Actualizar videos</button></div>}
+          <span className="eyebrow eyebrow--plain">A CONTINUACIÓN</span><h3>En esta sección</h3>{related.map((item) => <button key={item.id} onClick={() => onPlay(item)}><span><Play size={13} fill="currentColor" /></span><div><strong>{item.title}</strong><small>{item.duration}</small></div></button>)}{!related.length && <p>No hay más videos en esta sección.</p>}<div className="privacy-mini"><ShieldCheck size={17} /><span>Contenido autorizado para {ROLE_META[role].label}</span></div></aside>
       </div>
     </div>
   )
 }
 
-function PlayerQuiz({ video, userId, organizationId, requirePhoto, isWatched }) {
+function PlayerQuiz({ video, userId, organizationId, requirePhoto, isWatched, onResult }) {
   const passingScore = video.quiz?.passingScorePercent ?? 70
   // 'intro' -> (si se exige foto) 'camera' -> 'quiz'
   const [phase, setPhase] = useState('intro')
@@ -3094,6 +3170,12 @@ function PlayerQuiz({ video, userId, organizationId, requirePhoto, isWatched }) 
   const [cameraError, setCameraError] = useState('')
   const [capturingPhoto, setCapturingPhoto] = useState(false)
   const [quizLoadKey, setQuizLoadKey] = useState(0)
+  const [serverAttemptState, setServerAttemptState] = useState(null)
+  const attemptRequestIdRef = useRef(crypto.randomUUID())
+  const attemptState = getQuizAttemptState(video.quiz, {
+    attemptsCount: Math.max(result?.attemptsCount || 0, serverAttemptState?.attemptsCount || 0, video.quizResult?.attemptsCount || 0),
+    extraAttempts: Math.max(result?.extraAttempts || 0, serverAttemptState?.extraAttempts || 0, video.quizResult?.extraAttempts || 0),
+  })
   const [cameraDevices, setCameraDevices] = useState([])
   const [selectedCameraId, setSelectedCameraId] = useState('')
   const [cameraRetryKey, setCameraRetryKey] = useState(0)
@@ -3117,7 +3199,7 @@ function PlayerQuiz({ video, userId, organizationId, requirePhoto, isWatched }) 
     setError('')
     setQuestions([])
     getPlayableVideoQuiz(video.id)
-      .then((quiz) => { if (active) setQuestions(quiz?.questions || []) })
+      .then((quiz) => { if (active) { setQuestions(quiz?.questions || []); setServerAttemptState(quiz) } })
       .catch((quizError) => { if (active) setError(getErrorMessage(quizError, 'No se pudo cargar el cuestionario.')) })
       .finally(() => { if (active) setLoading(false) })
     return () => { active = false }
@@ -3180,6 +3262,7 @@ function PlayerQuiz({ video, userId, organizationId, requirePhoto, isWatched }) 
 
   const startQuiz = () => {
     setError('')
+    if (attemptState.exhausted) { setError('Agotaste tus intentos. Solicita al administrador un intento adicional para este cuestionario.'); return }
     if (!isWatched) {
       setError('Primero debes ver el video completo para poder responder el cuestionario.')
       return
@@ -3223,12 +3306,14 @@ function PlayerQuiz({ video, userId, organizationId, requirePhoto, isWatched }) 
   const allAnswered = questions.length > 0 && questions.every((question) => answers[question.id])
 
   const submit = async () => {
-    if (!allAnswered || submitting) return
+    if (!allAnswered || submitting || attemptState.exhausted || result) return
     setSubmitting(true)
     setError('')
     try {
       const payload = questions.map((question) => ({ questionId: question.id, optionId: answers[question.id] }))
-      setResult(await submitVideoQuizAttempt(video.id, payload, photoPath))
+      const submitted = await submitVideoQuizAttempt(video.id, payload, photoPath, attemptRequestIdRef.current)
+      setResult(submitted)
+      onResult?.(submitted)
     } catch (submitError) {
       setError(getErrorMessage(submitError, 'No se pudo enviar el cuestionario.'))
     } finally {
@@ -3237,6 +3322,9 @@ function PlayerQuiz({ video, userId, organizationId, requirePhoto, isWatched }) 
   }
 
   const retry = () => {
+    if (attemptState.exhausted) return
+    attemptRequestIdRef.current = crypto.randomUUID()
+    setServerAttemptState(result || serverAttemptState)
     setResult(null)
     setAnswers({})
     setPhotoPath(null)
@@ -3261,10 +3349,13 @@ function PlayerQuiz({ video, userId, organizationId, requirePhoto, isWatched }) 
 
       {error && <p className="form-error">{error}</p>}
 
+      <p className="quiz-attempt-summary" role="status">{attemptState.used} intentos realizados · {attemptState.remaining} disponibles</p>
+      {attemptState.exhausted && <div className="learning-notice">Agotaste tus intentos. El administrador debe abrir este cuestionario y habilitarte un intento adicional.<button className="secondary-button" type="button" onClick={() => onResult?.()}>Actualizar intentos</button></div>}
       {phase === 'intro' && (
         <div className="player-quiz__intro">
+          {!isWatched && <p>Primero completa el video para habilitar el cuestionario.</p>}
           {requirePhoto && <p className="player-quiz__photo-notice"><Camera size={15} /> Al iniciar se te pedirá tomarte una foto para verificar quién responde.</p>}
-          <button className="primary-button" type="button" onClick={startQuiz}>Iniciar cuestionario</button>
+          <button className="primary-button" type="button" onClick={startQuiz} disabled={!isWatched || attemptState.exhausted}>Iniciar cuestionario</button>
         </div>
       )}
 
@@ -3332,8 +3423,8 @@ function PlayerQuiz({ video, userId, organizationId, requirePhoto, isWatched }) 
 
           {!loading && (
             <div className="player-quiz__actions">
-              {result && !result.passed && <button className="secondary-button" type="button" onClick={retry}>Reintentar</button>}
-              {!result && <button className="primary-button" type="button" disabled={!allAnswered || submitting} onClick={submit}>{submitting ? 'Enviando…' : 'Enviar respuestas'}</button>}
+              {result && !result.passed && !attemptState.exhausted && <button className="secondary-button" type="button" onClick={retry}>Reintentar</button>}
+              {!result && <button className="primary-button" type="button" disabled={!allAnswered || submitting || attemptState.exhausted} onClick={submit}>{submitting ? 'Enviando…' : 'Enviar respuestas'}</button>}
             </div>
           )}
         </>

@@ -69,6 +69,7 @@ export default async function saveAdminSnapshot(request) {
     })
 
     if (error) {
+      if (error.code === 'VL001') return jsonResponse({ error: error.message, code: error.code }, 400)
       const missingRpc = error.code === 'PGRST202'
         || (/save_admin_snapshot/i.test(String(error.message || ''))
           && /not find|does not exist/i.test(String(error.message || '')))

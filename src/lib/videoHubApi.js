@@ -1,4 +1,5 @@
 import { getVideoSource, parseDurationSeconds } from '../videoUtils'
+import { withLearningAccess, validateLearningSequence } from '../learningRules'
 import { isSupabaseConfigured, supabase } from './supabase'
 
 const VIEWER_ROLES = ['operator', 'boss']
@@ -120,6 +121,7 @@ function mapDocumentRow(row) {
     id: row.id,
     organizationId: row.organization_id,
     sectionId: row.section_id,
+    audience: row.audience || 'both',
     title: row.title,
     fileName: row.file_name,
     mimeType: row.mime_type,
@@ -301,7 +303,7 @@ export async function listManagedUsers() {
   const context = await getCurrentAccessContext()
   const { data, error } = await getClient()
     .from('profiles')
-    .select('user_id,username,display_name,role,active,created_at,job_title,department')
+    .select('user_id,username,display_name,role,active,created_at,job_title,department,require_quiz_photo_override')
     .eq('organization_id', context.organizationId)
     .in('role', ['operator', 'boss'])
     .order('created_at')
@@ -316,6 +318,7 @@ export async function listManagedUsers() {
     createdAt: row.created_at,
     jobTitle: row.job_title || '',
     department: row.department || '',
+    requireQuizPhotoOverride: row.require_quiz_photo_override,
   }))
 }
 
@@ -326,9 +329,9 @@ export async function createUser({ username, password, role, displayName, jobTit
   }))
 }
 
-export async function updateUser({ userId, displayName, role, active, newPassword, jobTitle, department }) {
+export async function updateUser({ userId, displayName, role, active, newPassword, jobTitle, department, requireQuizPhotoOverride }) {
   return withAdminSession((accessToken) => requestFunction(UPDATE_USER_FUNCTION_URL, {
-    body: { userId, displayName, role, active, newPassword, jobTitle, department },
+    body: { userId, displayName, role, active, newPassword, jobTitle, department, requireQuizPhotoOverride },
     accessToken,
   }))
 }
@@ -357,10 +360,12 @@ export async function recordVideoProgress({ videoId, userId, progressSeconds, du
   // `ENDED`), para marcar "visto" aunque la duración guardada no coincida al
   // segundo exacto con la duración real del archivo.
   if (ended) payload.reported_ended = true
-  const { error } = await getClient()
+  const { data, error } = await getClient()
     .from('video_watch_progress')
     .upsert(payload, { onConflict: 'video_id,user_id' })
+    .select('completed').single()
   throwDatabaseError(error, 'No se pudo guardar el progreso del video')
+  return { completed: Boolean(data?.completed) }
 }
 
 export async function listWatchProgress() {
@@ -385,22 +390,34 @@ export async function listWatchProgress() {
  * organización y un operante/jefe recibe únicamente los suyos, igual que
  * `listWatchProgress`.
  */
-export async function listVideoQuizResults() {
+export async function listVideoQuizResults(videoId = null) {
   const context = await getCurrentAccessContext()
-  const { data, error } = await getClient()
+  let query = getClient()
     .from('video_quiz_results')
-    .select('video_id,user_id,attempts_count,best_score_percent,passed,last_attempt_at')
+    .select('video_id,user_id,attempts_count,extra_attempts,best_score_percent,passed,last_attempt_at')
     .eq('organization_id', context.organizationId)
+  if (videoId) query = query.eq('video_id', videoId)
+  const { data, error } = await query
   throwDatabaseError(error, 'No se pudieron leer los cuestionarios respondidos')
 
   return (data || []).map((row) => ({
     videoId: row.video_id,
     userId: row.user_id,
     attemptsCount: row.attempts_count,
+    extraAttempts: row.extra_attempts || 0,
     bestScorePercent: row.best_score_percent,
     passed: Boolean(row.passed),
     lastAttemptAt: row.last_attempt_at,
   }))
+}
+
+export async function grantQuizAttempt(videoId, userId) {
+  const { data, error } = await getClient().rpc('admin_grant_quiz_attempt', {
+    p_video_id: videoId,
+    p_user_id: userId,
+  })
+  throwDatabaseError(error, 'No se pudo habilitar el intento adicional')
+  return data
 }
 
 function mapQuizAttemptRow(row) {
@@ -465,6 +482,10 @@ function mapQuizPayload(payload) {
   return {
     videoId: payload.videoId,
     passingScorePercent: payload.passingScorePercent,
+    maxAttempts: payload.maxAttempts ?? 3,
+    attemptsCount: payload.attemptsCount || 0,
+    extraAttempts: payload.extraAttempts || 0,
+    remainingAttempts: payload.remainingAttempts,
     questions: (payload.questions || []).map((question) => ({
       id: question.id,
       prompt: question.prompt,
@@ -485,10 +506,11 @@ export async function getAdminVideoQuiz(videoId) {
 }
 
 /** Reemplaza por completo el cuestionario de un video de forma atómica. */
-export async function saveVideoQuiz(videoId, { passingScorePercent, questions }) {
+export async function saveVideoQuiz(videoId, { passingScorePercent, questions, maxAttempts = 3 }) {
   const { data, error } = await getClient().rpc('admin_save_video_quiz', {
     p_video_id: videoId,
     p_passing_score_percent: passingScorePercent,
+    p_max_attempts: maxAttempts,
     p_questions: questions.map((question) => ({
       prompt: question.prompt,
       options: question.options.map((option) => ({
@@ -514,11 +536,12 @@ export async function getPlayableVideoQuiz(videoId) {
 }
 
 /** Envía las respuestas; el servidor corrige y nunca confía en un puntaje calculado en el navegador. */
-export async function submitVideoQuizAttempt(videoId, answers, photoPath = null) {
+export async function submitVideoQuizAttempt(videoId, answers, photoPath = null, requestId = crypto.randomUUID()) {
   const { data, error } = await getClient().rpc('submit_video_quiz_attempt', {
     p_video_id: videoId,
     p_answers: answers.map((answer) => ({ questionId: answer.questionId, optionId: answer.optionId })),
     p_photo_path: photoPath || null,
+    p_request_id: requestId,
   })
   throwDatabaseError(error, 'No se pudo enviar el cuestionario')
   return {
@@ -528,6 +551,9 @@ export async function submitVideoQuizAttempt(videoId, answers, photoPath = null)
     passed: Boolean(data.passed),
     passingScorePercent: data.passingScorePercent,
     attemptsCount: data.attemptsCount,
+    maxAttempts: data.maxAttempts,
+    extraAttempts: data.extraAttempts || 0,
+    remainingAttempts: data.remainingAttempts,
     bestScorePercent: data.bestScorePercent,
   }
 }
@@ -624,13 +650,16 @@ export async function setSectionContentType({ sectionId, organizationId, content
   return data.content_type
 }
 
-export async function uploadSectionDocument({ organizationId, sectionId, title, file }) {
+export async function uploadSectionDocument({ organizationId, sectionId, title, file, audience = 'both' }) {
   const normalizedTitle = String(title || '').trim()
   const mimeType = resolveDocumentMimeType(file)
   if (!isUuid(organizationId) || !isUuid(sectionId) || !normalizedTitle) {
     throw new VideoHubApiError('Completa el título y la sección del documento.', {
       code: 'INVALID_DOCUMENT',
     })
+  }
+  if (!['operator', 'boss', 'both'].includes(audience)) {
+    throw new VideoHubApiError('Selecciona un rol válido para el documento.', { code: 'INVALID_DOCUMENT_AUDIENCE' })
   }
   if (!file || !mimeType) {
     throw new VideoHubApiError('Selecciona un archivo PDF, DOC o DOCX válido.', {
@@ -663,6 +692,7 @@ export async function uploadSectionDocument({ organizationId, sectionId, title, 
       id,
       organization_id: organizationId,
       section_id: sectionId,
+      audience,
       title: normalizedTitle,
       file_name: file.name,
       mime_type: mimeType,
@@ -670,7 +700,7 @@ export async function uploadSectionDocument({ organizationId, sectionId, title, 
       storage_bucket: DOCUMENTS_BUCKET,
       storage_object_path: storageObjectPath,
     })
-    .select('id,organization_id,section_id,title,file_name,mime_type,file_size,storage_bucket,storage_object_path,sort_order,created_at')
+    .select('id,organization_id,section_id,audience,title,file_name,mime_type,file_size,storage_bucket,storage_object_path,sort_order,created_at')
     .single()
 
   if (error) {
@@ -689,9 +719,23 @@ export async function updateSectionDocumentTitle(documentId, title) {
     .from('section_documents')
     .update({ title: normalizedTitle })
     .eq('id', documentId)
-    .select('id,organization_id,section_id,title,file_name,mime_type,file_size,storage_bucket,storage_object_path,sort_order,created_at')
+    .select('id,organization_id,section_id,audience,title,file_name,mime_type,file_size,storage_bucket,storage_object_path,sort_order,created_at')
     .single()
   throwDatabaseError(error, 'No se pudo editar el documento')
+  return mapDocumentRow(data)
+}
+
+export async function updateSectionDocumentAudience(documentId, audience) {
+  if (!isUuid(documentId) || !['operator', 'boss', 'both'].includes(audience)) {
+    throw new VideoHubApiError('Selecciona un rol válido para el documento.', { code: 'INVALID_DOCUMENT_AUDIENCE' })
+  }
+  const { data, error } = await getClient()
+    .from('section_documents')
+    .update({ audience })
+    .eq('id', documentId)
+    .select('id,organization_id,section_id,audience,title,file_name,mime_type,file_size,storage_bucket,storage_object_path,sort_order,created_at')
+    .single()
+  throwDatabaseError(error, 'No se pudo cambiar la visibilidad del documento')
   return mapDocumentRow(data)
 }
 
@@ -738,22 +782,24 @@ export async function loadVideoHubSnapshot(options = {}) {
     (options.previousSnapshot?.videos || []).map((video) => [video.id, video]),
   )
 
-  const [organizationResult, settingsResult, sectionsResult, rolesResult, videosResult, assignmentsResult, quizzesResult, myProgressResult, myQuizResultsResult, sectionContentResult, documentsResult] = await Promise.all([
+  const [organizationResult, settingsResult, sectionsResult, rolesResult, videosResult, assignmentsResult, quizzesResult, myProgressResult, myQuizResultsResult, sectionContentResult, documentsResult, myProfileResult] = await Promise.all([
     client.from('organizations').select('id,name,slug,logo_url').eq('id', organizationId).single(),
     client.from('app_settings').select('product_name,welcome_title,welcome_message,support_message,allow_light_mode,require_quiz_photo').eq('organization_id', organizationId).maybeSingle(),
     client.from('sections').select('id,name,slug,icon,sort_order,created_at').eq('organization_id', organizationId).eq('active', true).order('sort_order'),
     client.from('section_roles').select('section_id,role,visible').eq('organization_id', organizationId),
     client.from('videos').select('id,title,description,duration_label,duration_seconds,featured,created_at').eq('organization_id', organizationId).eq('active', true).order('created_at', { ascending: false }),
-    client.from('video_assignments').select('video_id,role,section_id,visible,is_locked,sort_order').eq('organization_id', organizationId),
-    client.from('video_quizzes').select('video_id,passing_score_percent,question_count').eq('organization_id', organizationId),
+    client.from('video_assignments').select('video_id,role,section_id,visible,is_locked,prerequisite_video_id,sort_order').eq('organization_id', organizationId),
+    client.from('video_quizzes').select('video_id,passing_score_percent,question_count,max_attempts').eq('organization_id', organizationId),
     client.from('video_watch_progress').select('video_id,completed').eq('organization_id', organizationId).eq('user_id', context.userId),
-    client.from('video_quiz_results').select('video_id,attempts_count,best_score_percent,passed').eq('organization_id', organizationId).eq('user_id', context.userId),
+    client.from('video_quiz_results').select('video_id,attempts_count,extra_attempts,best_score_percent,passed').eq('organization_id', organizationId).eq('user_id', context.userId),
     client.from('section_content_settings').select('section_id,content_type').eq('organization_id', organizationId),
-    client.from('section_documents').select('id,organization_id,section_id,title,file_name,mime_type,file_size,storage_bucket,storage_object_path,sort_order,created_at').eq('organization_id', organizationId).eq('active', true).order('sort_order').order('created_at', { ascending: false }),
+    client.from('section_documents').select('id,organization_id,section_id,audience,title,file_name,mime_type,file_size,storage_bucket,storage_object_path,sort_order,created_at').eq('organization_id', organizationId).eq('active', true).order('sort_order').order('created_at', { ascending: false }),
+    client.from('profiles').select('require_quiz_photo_override').eq('user_id', context.userId).single(),
   ])
 
   throwDatabaseError(organizationResult.error, 'No se pudo leer la organización')
   throwDatabaseError(settingsResult.error, 'No se pudo leer la configuración')
+  throwDatabaseError(myProfileResult.error, 'No se pudo leer la configuración personal')
   throwDatabaseError(sectionsResult.error, 'No se pudieron leer las secciones')
   throwDatabaseError(rolesResult.error, 'No se pudieron leer los permisos de secciones')
   throwDatabaseError(videosResult.error, 'No se pudieron leer los videos')
@@ -814,11 +860,13 @@ export async function loadVideoHubSnapshot(options = {}) {
   const videos = videoRows.map((video) => {
     const assignments = {}
     const locked = {}
+    const prerequisites = {}
     assignmentRows
       .filter((row) => row.video_id === video.id && row.visible && VIEWER_ROLES.includes(row.role))
       .forEach((row) => {
         assignments[row.role] = row.section_id
         locked[row.role] = Boolean(row.is_locked)
+        if (row.prerequisite_video_id) prerequisites[row.role] = row.prerequisite_video_id
       })
 
     const source = sourceByVideo.get(video.id)
@@ -835,15 +883,18 @@ export async function loadVideoHubSnapshot(options = {}) {
       duration: video.duration_label || formatDuration(video.duration_seconds),
       assignments,
       locked,
+      prerequisites,
       featured: Boolean(video.featured),
       createdAt: video.created_at,
       watched: Boolean(myProgressByVideo.get(video.id)?.completed),
       quiz: quizRow ? {
         passingScorePercent: quizRow.passing_score_percent,
         questionCount: quizRow.question_count,
+        maxAttempts: quizRow.max_attempts,
       } : null,
       quizResult: quizResultRow ? {
         attemptsCount: quizResultRow.attempts_count,
+        extraAttempts: quizResultRow.extra_attempts || 0,
         bestScorePercent: quizResultRow.best_score_percent,
         passed: Boolean(quizResultRow.passed),
       } : null,
@@ -868,9 +919,12 @@ export async function loadVideoHubSnapshot(options = {}) {
       ? Number(context.contentRevision)
       : 0,
     logoUrl: organizationResult.data?.logo_url || '',
-    settings: mapSettings(settingsResult.data),
+    settings: {
+      ...mapSettings(settingsResult.data),
+      requireQuizPhoto: myProfileResult.data?.require_quiz_photo_override ?? Boolean(settingsResult.data?.require_quiz_photo),
+    },
     sections,
-    videos,
+    videos: VIEWER_ROLES.includes(context.role) ? withLearningAccess(videos, sections, context.role) : videos,
     documents: (documentsResult.data || [])
       .filter((document) => sectionIds.has(document.section_id))
       .map(mapDocumentRow),
@@ -879,6 +933,8 @@ export async function loadVideoHubSnapshot(options = {}) {
 }
 
 function prepareSnapshot(snapshot, organizationId, existingSections) {
+  const sequenceError = validateLearningSequence(snapshot?.videos || [], snapshot?.sections || [])
+  if (sequenceError) throw new VideoHubApiError(sequenceError, { code: 'INVALID_LEARNING_SEQUENCE' })
   if (!Array.isArray(snapshot?.sections) || !Array.isArray(snapshot?.videos)) {
     throw new VideoHubApiError('El snapshot debe incluir listas de secciones y videos.', {
       code: 'INVALID_SNAPSHOT',
@@ -1044,6 +1100,7 @@ function prepareSnapshot(snapshot, organizationId, existingSections) {
         section_id: sectionId,
         visible: true,
         is_locked: Boolean(video.locked?.[role]),
+        prerequisite_video_id: video.prerequisites?.[role] || null,
         sort_order: index,
       })
     })

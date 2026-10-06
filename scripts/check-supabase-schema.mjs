@@ -19,7 +19,10 @@ const resources = [
   ['section_documents', 'id,organization_id,section_id,storage_object_path'],
   ['videos', 'id,organization_id,title'],
   ['video_sources', 'video_id,provider'],
-  ['video_assignments', 'video_id,role,is_locked'],
+  ['video_assignments', 'video_id,role,is_locked,prerequisite_video_id'],
+  ['video_quizzes', 'video_id,max_attempts'],
+  ['video_quiz_results', 'video_id,user_id,attempts_count,extra_attempts'],
+  ['video_quiz_attempts', 'video_id,user_id,request_id'],
   ['audit_events', 'id,organization_id,action'],
 ]
 
