@@ -2,7 +2,8 @@ import { getVideoSource, parseDurationSeconds } from '../videoUtils'
 import { withLearningAccess, validateLearningSequence } from '../learningRules'
 import { isSupabaseConfigured, supabase } from './supabase'
 
-import { VIEWER_ROLES } from '../data.js'
+import { DOCUMENT_AUDIENCES, USER_ROLES, VIEWER_ROLES } from '../data.js'
+import { getRoleSchemaIssue } from '../roleErrors.js'
 const DATABASE_PROVIDERS = new Set([
   'youtube',
   'google_drive',
@@ -50,6 +51,8 @@ function getClient() {
 
 function throwDatabaseError(error, operation) {
   if (!error) return
+  const issue = getRoleSchemaIssue(error)
+  if (issue) throw new VideoHubApiError(issue.error, { code: issue.code, cause: error })
   throw new VideoHubApiError(`${operation}: ${error.message}`, {
     code: error.code || 'SUPABASE_ERROR',
     details: error.details || error.hint || '',
@@ -391,7 +394,7 @@ export async function listWatchProgress() {
 
 /**
  * Resultados de cuestionario. Con RLS, un admin recibe los de toda la
- * organización y un operante/jefe recibe únicamente los suyos, igual que
+ * organización y cada usuario de contenido recibe únicamente los suyos, igual que
  * `listWatchProgress`.
  */
 export async function listVideoQuizResults(videoId = null) {
@@ -465,7 +468,7 @@ export async function listQuizAttemptsForUser(userId) {
 /**
  * Igual que `listQuizAttemptsForUser`, pero sin filtrar por usuario: con RLS,
  * un admin recibe los intentos de todos los usuarios de su organización
- * (usado para el reporte Excel). Un operante/jefe solo vería los suyos.
+ * (usado para el reporte Excel). Los demás roles solo ven sus propios intentos.
  */
 export async function listAllQuizAttempts() {
   const context = await getCurrentAccessContext()
@@ -605,7 +608,7 @@ export async function getCurrentAccessContext() {
   const { data, error } = await getClient().rpc('get_my_access_context')
   throwDatabaseError(error, 'No se pudo obtener el perfil de acceso')
 
-  if (!data?.userId || !data?.organizationId || !data?.role) {
+  if (!data?.userId || !data?.organizationId || !USER_ROLES.includes(data?.role) || data.active !== true) {
     throw new VideoHubApiError('La sesión no tiene un perfil activo asociado.', {
       code: 'PROFILE_NOT_FOUND',
     })
@@ -662,7 +665,7 @@ export async function uploadSectionDocument({ organizationId, sectionId, title, 
       code: 'INVALID_DOCUMENT',
     })
   }
-  if (![...VIEWER_ROLES, 'both'].includes(audience)) {
+  if (!DOCUMENT_AUDIENCES.includes(audience)) {
     throw new VideoHubApiError('Selecciona un rol válido para el documento.', { code: 'INVALID_DOCUMENT_AUDIENCE' })
   }
   if (!file || !mimeType) {
@@ -730,7 +733,7 @@ export async function updateSectionDocumentTitle(documentId, title) {
 }
 
 export async function updateSectionDocumentAudience(documentId, audience) {
-  if (!isUuid(documentId) || ![...VIEWER_ROLES, 'both'].includes(audience)) {
+  if (!isUuid(documentId) || !DOCUMENT_AUDIENCES.includes(audience)) {
     throw new VideoHubApiError('Selecciona un rol válido para el documento.', { code: 'INVALID_DOCUMENT_AUDIENCE' })
   }
   const { data, error } = await getClient()
@@ -854,7 +857,7 @@ export async function loadVideoHubSnapshot(options = {}) {
     slug: section.slug,
     icon: section.icon,
     roles: roleRows
-      .filter((row) => row.section_id === section.id && row.visible && VIEWER_ROLES.includes(row.role))
+      .filter((row) => row.section_id === section.id && row.visible && USER_ROLES.includes(row.role))
       .map((row) => row.role),
     order: section.sort_order,
     contentType: contentTypeBySection.get(section.id) === 'documents' ? 'documents' : 'videos',
@@ -866,7 +869,7 @@ export async function loadVideoHubSnapshot(options = {}) {
     const locked = {}
     const prerequisites = {}
     assignmentRows
-      .filter((row) => row.video_id === video.id && row.visible && VIEWER_ROLES.includes(row.role))
+      .filter((row) => row.video_id === video.id && row.visible && USER_ROLES.includes(row.role))
       .forEach((row) => {
         assignments[row.role] = row.section_id
         locked[row.role] = Boolean(row.is_locked)
@@ -936,7 +939,7 @@ export async function loadVideoHubSnapshot(options = {}) {
   }
 }
 
-function prepareSnapshot(snapshot, organizationId, existingSections) {
+export function prepareSnapshot(snapshot, organizationId, existingSections) {
   const sequenceError = validateLearningSequence(snapshot?.videos || [], snapshot?.sections || [])
   if (sequenceError) throw new VideoHubApiError(sequenceError, { code: 'INVALID_LEARNING_SEQUENCE' })
   if (!Array.isArray(snapshot?.sections) || !Array.isArray(snapshot?.videos)) {
@@ -1000,11 +1003,11 @@ function prepareSnapshot(snapshot, organizationId, existingSections) {
   const sectionRoleRows = snapshot.sections.flatMap((section, index) => {
     const inputId = String(section.id || `new-section-${index}`)
     const sectionId = sectionIdMap.get(inputId)
-    return VIEWER_ROLES.map((role) => ({
+    return USER_ROLES.map((role) => ({
       section_id: sectionId,
       organization_id: organizationId,
       role,
-      visible: Array.isArray(section.roles) && section.roles.includes(role),
+      visible: role === 'admin' || (Array.isArray(section.roles) && section.roles.includes(role)),
     }))
   })
 
@@ -1088,7 +1091,7 @@ function prepareSnapshot(snapshot, organizationId, existingSections) {
       })
     }
 
-    VIEWER_ROLES.forEach((role) => {
+    USER_ROLES.forEach((role) => {
       const inputSectionId = video.assignments?.[role]
       if (!inputSectionId) return
       const sectionId = sectionIdMap.get(String(inputSectionId))
@@ -1103,8 +1106,8 @@ function prepareSnapshot(snapshot, organizationId, existingSections) {
         role,
         section_id: sectionId,
         visible: true,
-        is_locked: Boolean(video.locked?.[role]),
-        prerequisite_video_id: video.prerequisites?.[role] || null,
+        is_locked: role !== 'admin' && Boolean(video.locked?.[role]),
+        prerequisite_video_id: role === 'admin' ? null : video.prerequisites?.[role] || null,
         sort_order: index,
       })
     })

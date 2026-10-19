@@ -2,6 +2,9 @@ import { useCallback, useEffect, useState } from 'react'
 import { Plus, RefreshCw } from 'lucide-react'
 import { grantQuizAttempt, listManagedUsers, listVideoQuizResults } from './lib/videoHubApi'
 import { getQuizAttemptState } from './learningRules'
+import { getRoleLabel } from './data.js'
+import { RoleOptions } from './RoleOptions'
+import { matchesUserSearch } from './roleAccess.js'
 
 export default function QuizAttemptsManager({ videoId, maxAttempts }) {
   const [rows, setRows] = useState([])
@@ -10,13 +13,14 @@ export default function QuizAttemptsManager({ videoId, maxAttempts }) {
   const [message, setMessage] = useState('')
   const [error, setError] = useState('')
   const [query, setQuery] = useState('')
+  const [roleFilter, setRoleFilter] = useState('all')
   const [refreshKey, setRefreshKey] = useState(0)
 
   useEffect(() => {
     let active = true
     setLoading(true)
     setError('')
-    Promise.all([listManagedUsers(), listVideoQuizResults(videoId)])
+    Promise.all([listManagedUsers({ includeAdmins: true }), listVideoQuizResults(videoId)])
       .then(([users, results]) => {
         if (!active) return
         const byId = new Map(users.map((user) => [user.userId, user]))
@@ -43,19 +47,20 @@ export default function QuizAttemptsManager({ videoId, maxAttempts }) {
     }
   }, [busyUser, videoId])
 
-  const filtered = rows.filter((row) => `${row.user?.displayName || ''} ${row.user?.username || ''}`.toLowerCase().includes(query.toLowerCase()))
+  const filtered = rows.filter((row) => matchesUserSearch(row.user || { username: row.userId }, query)
+    && (roleFilter === 'all' || row.user?.role === roleFilter))
   return (
     <section className="quiz-attempt-management" aria-label="Intentos de este cuestionario">
       <header><div><h3>Intentos por usuario</h3><p>Habilita un intento adicional cuando el usuario haya agotado los disponibles. Su historial se conserva.</p></div><button className="icon-button" type="button" aria-label="Actualizar intentos" onClick={() => setRefreshKey((value) => value + 1)} disabled={loading || Boolean(busyUser)}><RefreshCw size={16} /></button></header>
-      <input className="quiz-attempt-search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Buscar por nombre o usuario…" aria-label="Buscar usuario en este cuestionario" />
+      <div className="quiz-attempt-filters"><input className="quiz-attempt-search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Buscar por nombre, usuario o rol…" aria-label="Buscar usuario en este cuestionario" /><label className="role-filter"><span>Rol</span><select value={roleFilter} onChange={(event) => setRoleFilter(event.target.value)}><option value="all">Todos los roles</option><RoleOptions /></select></label></div>
       {loading ? <p>Cargando intentos…</p> : filtered.map((row) => {
         const state = getQuizAttemptState({ maxAttempts }, row)
         return <div className="quiz-attempt-user" key={row.userId}>
-          <div><strong>{row.user?.displayName || row.user?.username || 'Usuario'}</strong><small>{row.user?.username} · {state.used} intentos realizados · {state.passed ? 'Aprobado' : `${state.remaining} disponibles`}</small></div>
+          <div><strong>{row.user?.displayName || row.user?.username || 'Usuario'}</strong><small>{row.user?.username || row.userId} · {getRoleLabel(row.user?.role)} · {state.used} intentos realizados · {state.passed ? 'Aprobado' : `${state.remaining} disponibles`}</small></div>
           <button className="secondary-button" type="button" disabled={Boolean(busyUser) || !state.exhausted || state.passed || !row.user?.active} onClick={() => grant(row)}><Plus size={14} />{busyUser === row.userId ? 'Habilitando…' : 'Habilitar 1 intento'}</button>
         </div>
       })}
-      {!loading && !filtered.length && <p>{query ? 'No hay resultados para esa búsqueda.' : 'Todavía no hay intentos registrados en este cuestionario.'}</p>}
+      {!loading && !filtered.length && <p>{query || roleFilter !== 'all' ? 'No hay resultados para estos filtros.' : 'Todavía no hay intentos registrados en este cuestionario.'}</p>}
       {error && <p className="form-error" role="alert">{error}</p>}
       {message && <p className="quiz-saved-note" role="status">{message}</p>}
     </section>

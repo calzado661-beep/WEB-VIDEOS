@@ -1,4 +1,5 @@
 import { loadEnv } from 'vite'
+import { USER_ROLES } from '../src/data.js'
 
 const env = loadEnv('development', process.cwd(), '')
 const projectUrl = env.VITE_SUPABASE_URL?.replace(/\/$/, '')
@@ -93,7 +94,7 @@ for (const role of ['salesperson', 'management']) {
     })
     const payload = await response.json().catch(() => ({}))
     if (payload?.code === '22P02') {
-      console.log(`PENDIENTE · Rol ${role} · Aplica las migraciones operational_role_values y operational_role_permissions.`)
+      console.log(`PENDIENTE · Rol ${role} · Completa las migraciones de roles.`)
       migrationsPending = true
     } else if (!response.ok) {
       console.log(`ERROR · Rol ${role} · HTTP ${response.status}`)
@@ -105,6 +106,26 @@ for (const role of ['salesperson', 'management']) {
     console.log(`ERROR · Rol ${role} · ${error.name}`)
     failed = true
   }
+}
+
+try {
+  const response = await fetch(`${projectUrl}/rest/v1/rpc/get_role_configuration`, {
+    method: 'POST', headers: { apikey: secretKey, 'content-type': 'application/json' },
+    body: '{}', signal: AbortSignal.timeout(15_000),
+  })
+  const configuration = await response.json().catch(() => ({}))
+  if (configuration?.code === 'PGRST202' || (response.ok && (configuration?.version !== 3 || !USER_ROLES.every((role) => configuration?.userRoles?.includes(role))))) {
+    console.log('PENDIENTE · Configuración completa de los cinco roles · Aplica operational_roles_consistency.')
+    migrationsPending = true
+  } else if (!response.ok) {
+    console.log(`ERROR · Configuración de roles · HTTP ${response.status}`)
+    failed = true
+  } else {
+    console.log('OK · Configuración completa de los cinco roles')
+  }
+} catch (error) {
+  console.log(`ERROR · Configuración de roles · ${error.name}`)
+  failed = true
 }
 
 for (const [rpc, body] of requiredRpcChecks) {

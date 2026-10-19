@@ -23,7 +23,8 @@ La aplicación lee y guarda videos, secciones, configuración y permisos únicam
 
 - Login con usuario y contraseña individuales por persona (Supabase Auth valida la contraseña).
 - Panel de administración para crear, editar y deshabilitar cuentas con cualquiera de los cinco roles. La cuenta del administrador conectado está protegida contra cambios desde este panel.
-- Secciones y permisos de contenido independientes para Operarios, Jefes, Vendedores y Gerencia.
+- Opciones y filtros para los cinco roles en usuarios, contenido, vista previa, progreso y cuestionarios.
+- Acceso total automático de Administradores y permisos independientes para Operarios, Jefes, Vendedores y Gerencia.
 - Asignación de cada video a un rol y una sección específicos.
 - Reproducción integrada de YouTube, Google Drive, Vimeo, Loom y archivos directos MP4/WebM/Ogg.
 - Título, descripción, duración y opción de contenido destacado.
@@ -32,6 +33,7 @@ La aplicación lee y guarda videos, secciones, configuración y permisos únicam
 - Configuración general de identidad, bienvenida, ayuda y modo claro.
 - Guardado automático transaccional y versionado en Supabase, con lectura al iniciar y al volver a enfocar la página.
 - Vista previa de permisos por rol.
+- Contenido exclusivo para Administradores y reporte Excel de los usuarios filtrados con el rol en sus cuatro hojas.
 - Tema negro/dorado y modo claro.
 - Diseño responsive para escritorio, tablet y móvil.
 

@@ -1,4 +1,5 @@
 import { jsonResponse, methodNotAllowed, readBearerToken, readJsonBody } from './_shared/http.js'
+import { getRoleSchemaIssue } from '../../src/roleErrors.js'
 import {
   createUserClient,
   getServerConfiguration,
@@ -69,6 +70,8 @@ export default async function saveAdminSnapshot(request) {
     })
 
     if (error) {
+      const roleIssue = getRoleSchemaIssue(error)
+      if (roleIssue) return jsonResponse(roleIssue, 409)
       if (error.code === 'VL001') return jsonResponse({ error: error.message, code: error.code }, 400)
       const missingRpc = error.code === 'PGRST202'
         || (/save_admin_snapshot/i.test(String(error.message || ''))

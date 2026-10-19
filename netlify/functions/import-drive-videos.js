@@ -148,14 +148,14 @@ function requireResult(result, operation) {
   return result.data
 }
 
-async function readAdminSnapshot(serviceClient, organizationId) {
+export async function readAdminSnapshot(serviceClient, organizationId) {
   const [organizationResult, settingsResult, sectionsResult, rolesResult, videosResult, assignmentsResult] = await Promise.all([
     serviceClient.from('organizations').select('id,name,logo_url,content_revision').eq('id', organizationId).single(),
-    serviceClient.from('app_settings').select('product_name,welcome_title,welcome_message,support_message,allow_light_mode').eq('organization_id', organizationId).maybeSingle(),
+    serviceClient.from('app_settings').select('product_name,welcome_title,welcome_message,support_message,allow_light_mode,require_quiz_photo').eq('organization_id', organizationId).maybeSingle(),
     serviceClient.from('sections').select('id,name,slug,icon,sort_order,active').eq('organization_id', organizationId).eq('active', true).order('sort_order'),
     serviceClient.from('section_roles').select('section_id,role,visible').eq('organization_id', organizationId),
     serviceClient.from('videos').select('id,title,description,duration_label,duration_seconds,featured,active,created_at').eq('organization_id', organizationId).eq('active', true).order('created_at'),
-    serviceClient.from('video_assignments').select('video_id,role,section_id,visible,is_locked,sort_order').eq('organization_id', organizationId),
+    serviceClient.from('video_assignments').select('video_id,role,section_id,visible,is_locked,prerequisite_video_id,sort_order').eq('organization_id', organizationId),
   ])
 
   const organization = requireResult(organizationResult, 'READ_ORGANIZATION')

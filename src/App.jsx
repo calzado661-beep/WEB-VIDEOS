@@ -50,7 +50,9 @@ import {
   Video,
   X,
 } from 'lucide-react'
-import { ROLE_META, USER_ROLES, VIEWER_ROLES } from './data'
+import { ROLE_META, USER_ROLES, VIEWER_ROLES, getRoleLabel, hasFullContentAccess } from './data'
+import { AdminAccessNotice, RoleOptions } from './RoleOptions'
+import { canViewSection, canViewVideo, canViewDocument, videoBelongsToSection, getAssignedViewerRoles, isVideoLockedForRole, matchesUserSearch, normalizeSearch } from './roleAccess'
 import {
   createUser,
   deleteVideoQuiz,
@@ -125,14 +127,13 @@ const SECTION_ICON_OPTIONS = [
 const AUDIENCE_META = {
   ...Object.fromEntries(VIEWER_ROLES.map((role) => [role, { label: ROLE_META[role].label, groupLabel: ROLE_META[role].label, description: `Videos exclusivos para ${ROLE_META[role].label}` }])),
   both: { label: 'Varios roles', groupLabel: 'Varios roles', description: 'Videos compartidos entre dos o más roles' },
-  none: { label: 'Sin asignar', groupLabel: 'Sin asignar', description: 'Videos que necesitan una audiencia y una sección' },
+  none: { label: 'Solo Administradores', groupLabel: 'Solo Administradores', description: 'Videos reservados a administración, sin acceso para otros roles' },
 }
 
-const isVideoAssignedTo = (video, role) => Boolean(video.assignments?.[role])
-const isVideoLockedFor = (video, role) => isVideoAssignedTo(video, role) && Boolean(video.locked?.[role] || video.learningLocked?.[role])
+const isVideoLockedFor = isVideoLockedForRole
 
 function getVideoAudience(video) {
-  const roles = VIEWER_ROLES.filter((role) => isVideoAssignedTo(video, role))
+  const roles = getAssignedViewerRoles(video)
   return roles.length > 1 ? 'both' : roles[0] || 'none'
 }
 
@@ -1038,7 +1039,7 @@ function AdminApp({
         >
           {sidebarCollapsed ? <ChevronRight size={16} /> : <ChevronLeft size={16} />}
         </button>
-        <div className="role-pill"><span>AD</span><div><strong>Administrador</strong><small>Control total</small></div></div>
+        <div className="role-pill"><span>AD</span><div><strong>{ROLE_META.admin.label}</strong><small>Control total</small></div></div>
         <nav className="sidebar-nav" aria-label="Administración">
           <small className="sidebar-label">GESTIÓN</small>
           {ADMIN_NAV.map((item) => {
@@ -1143,10 +1144,8 @@ function SettingsManager({ data, setData }) {
 }
 
 function AdminOverview({ data, onNavigate }) {
-  const visibleSectionIds = (role) => new Set(data.sections.filter((section) => section.roles.includes(role)).map((section) => section.id))
-  const roleStats = VIEWER_ROLES.map((role) => {
-    const sectionIds = visibleSectionIds(role)
-    const videos = data.videos.filter((video) => sectionIds.has(video.assignments[role]))
+  const roleStats = USER_ROLES.map((role) => {
+    const videos = data.videos.filter((video) => canViewVideo(video, role, data.sections))
     const blocked = videos.filter((video) => isVideoLockedFor(video, role)).length
     return { role, total: videos.length, blocked }
   })
@@ -1154,7 +1153,7 @@ function AdminOverview({ data, onNavigate }) {
     { label: 'Videos publicados', value: data.videos.length, note: 'en la biblioteca', icon: Play, tone: 'red' },
     { label: 'Secciones activas', value: data.sections.length, note: 'entre todos los roles', icon: Layers3, tone: 'blue' },
     { label: 'Roles de usuarios', value: USER_ROLES.length, note: 'Administradores y cuatro roles de contenido', icon: UsersRound, tone: 'green' },
-    { label: 'Asignaciones por rol', value: roleStats.reduce((sum, item) => sum + item.total, 0), note: 'videos con una sección visible', icon: BriefcaseBusiness, tone: 'violet' },
+    { label: 'Asignaciones por rol', value: roleStats.filter((item) => !hasFullContentAccess(item.role)).reduce((sum, item) => sum + item.total, 0), note: 'videos con una sección visible', icon: BriefcaseBusiness, tone: 'violet' },
   ]
 
   return (
@@ -1175,7 +1174,7 @@ function AdminOverview({ data, onNavigate }) {
               return (
                 <div className="recent-row" key={video.id}>
                   <div className="mini-thumbnail"><VideoThumbnail video={video} /><Play size={16} fill="currentColor" /></div>
-                  <div className="recent-row__copy"><strong>{video.title}</strong><small><span style={{ color: getSourceAccent(source.label) }}>{source.label}</span> · {Object.keys(video.assignments).map((role) => ROLE_META[role].label).join(', ')}</small></div>
+                  <div className="recent-row__copy"><strong>{video.title}</strong><small><span style={{ color: getSourceAccent(source.label) }}>{source.label}</span> · {[ROLE_META.admin.label, ...getAssignedViewerRoles(video).map(getRoleLabel)].join(', ')}</small></div>
                   <span className="status-badge">Publicado</span>
                 </div>
               )
@@ -1211,7 +1210,7 @@ function SectionsManager({ data, setData, saveState, onRemove, onNotify, onManag
 
   const addSection = (event) => {
     event.preventDefault()
-    if (!draft.name.trim() || !draft.roles.length) return
+    if (!draft.name.trim()) return
     const section = {
       id: crypto.randomUUID(),
       name: draft.name.trim(),
@@ -1270,7 +1269,7 @@ function SectionsManager({ data, setData, saveState, onRemove, onNotify, onManag
     <div className="manager-stack">
       <section className="panel manager-panel">
         <div className="manager-toolbar">
-          <div><h2>Menú de navegación</h2><p>Activa cada sección para los roles que correspondan.</p></div>
+          <div><h2>Menú de navegación</h2><p>Los administradores siempre tienen acceso. Activa los demás roles que correspondan.</p></div>
           <button className="primary-button" onClick={() => setAdding((value) => !value)}>{adding ? <X size={17} /> : <Plus size={17} />} {adding ? 'Cancelar' : 'Nueva sección'}</button>
         </div>
 
@@ -1278,8 +1277,8 @@ function SectionsManager({ data, setData, saveState, onRemove, onNotify, onManag
           <form className="inline-form" onSubmit={addSection}>
             <div className="form-group grow"><label>Nombre de la sección</label><input value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} placeholder="Ej. Recursos humanos" autoFocus /></div>
             <div className="form-group"><label>Icono</label><select value={draft.icon} onChange={(event) => setDraft({ ...draft, icon: event.target.value })}>{SECTION_ICON_OPTIONS.map((icon) => <option value={icon.value} key={icon.value}>{icon.label}</option>)}</select></div>
-            <div className="form-group"><label>Visible para</label><div className="role-checks">{VIEWER_ROLES.map((role) => <button type="button" className={draft.roles.includes(role) ? 'selected' : ''} key={role} onClick={() => setDraft({ ...draft, roles: draft.roles.includes(role) ? draft.roles.filter((item) => item !== role) : [...draft.roles, role] })}><Check size={13} /> {ROLE_META[role].label}</button>)}</div></div>
-            <button className="primary-button form-submit" type="submit" disabled={!draft.name.trim() || !draft.roles.length}>Crear</button>
+            <div className="form-group"><label>Visible para</label><div className="role-checks">{USER_ROLES.map((role) => <button type="button" className={hasFullContentAccess(role) || draft.roles.includes(role) ? 'selected' : ''} disabled={hasFullContentAccess(role)} title={hasFullContentAccess(role) ? 'Acceso total automático' : undefined} key={role} onClick={() => setDraft({ ...draft, roles: draft.roles.includes(role) ? draft.roles.filter((item) => item !== role) : [...draft.roles, role] })}><Check size={13} /> {ROLE_META[role].label}</button>)}</div></div>
+            <button className="primary-button form-submit" type="submit" disabled={!draft.name.trim()}>Crear</button>
           </form>
         )}
 
@@ -1292,7 +1291,7 @@ function SectionsManager({ data, setData, saveState, onRemove, onNotify, onManag
             return (
               <div className="section-row" key={section.id}>
                 <div className="section-identity"><span className="section-icon"><Icon size={18} /></span>{editingId === section.id ? <div className="inline-edit"><input value={editingName} onChange={(event) => setEditingName(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') saveName(section.id) }} autoFocus /><button onClick={() => saveName(section.id)}><Check size={15} /></button></div> : <div><strong>{section.name}</strong><small>/{section.id.split('-').slice(0, -1).join('-') || section.id}</small></div>}</div>
-                <div className="role-toggles">{VIEWER_ROLES.map((role) => <button className={section.roles.includes(role) ? 'on' : ''} onClick={() => toggleRole(section.id, role)} key={role}><span>{section.roles.includes(role) && <Check size={11} />}</span>{ROLE_META[role].label}</button>)}</div>
+                <div className="role-toggles">{USER_ROLES.map((role) => <button className={hasFullContentAccess(role) || section.roles.includes(role) ? 'on' : ''} disabled={hasFullContentAccess(role)} title={hasFullContentAccess(role) ? 'Acceso total automático' : undefined} onClick={() => toggleRole(section.id, role)} key={role}><span>{(hasFullContentAccess(role) || section.roles.includes(role)) && <Check size={11} />}</span>{ROLE_META[role].label}</button>)}</div>
                 <button type="button" className="section-files-button" onClick={() => { setOpenSectionId(section.id); setActiveTab('videos') }} aria-label={`Ver videos y documentos de ${section.name}`} title="Ver videos y documentos"><Eye size={17} /><span>{count} videos · {documentCount} docs</span></button>
                 <div className="order-buttons"><button disabled={index === 0} onClick={() => move(section.id, -1)}><ChevronLeft size={16} /></button><button disabled={index === sortedSections.length - 1} onClick={() => move(section.id, 1)}><ChevronRight size={16} /></button></div>
                 <div className="row-actions"><button onClick={() => { setEditingId(section.id); setEditingName(section.name) }}><Pencil size={16} /></button><button className="danger" onClick={() => onRemove(section.id)}><Trash2 size={16} /></button></div>
@@ -1327,8 +1326,8 @@ const emptyVideoDraft = {
   thumbnailUrl: '',
   duration: '',
   featured: false,
-  ...Object.fromEntries(VIEWER_ROLES.flatMap((role) => [
-    [`${role}Enabled`, role === 'operator'], [`${role}Section`, ''],
+  ...Object.fromEntries(USER_ROLES.flatMap((role) => [
+    [`${role}Enabled`, hasFullContentAccess(role)], [`${role}Section`, ''],
     [`${role}Locked`, false], [`${role}Prerequisite`, ''],
   ])),
 }
@@ -1340,23 +1339,25 @@ function VideosManager({ data, setData, saveState, persistedVideoIdsRef, onNotif
   const [draft, setDraft] = useState(emptyVideoDraft)
   const [error, setError] = useState('')
   const [query, setQuery] = useState('')
+  const [audienceFilter, setAudienceFilter] = useState('all')
   const [combinedSave, setCombinedSave] = useState(null)
   const quizEditorRef = useRef(null)
 
   const sectionsFor = (role) => [...data.sections]
-    .filter((section) => section.roles.includes(role))
+    .filter((section) => canViewSection(section, role))
     .sort((a, b) => a.order - b.order)
 
   const openNew = (sectionId = null) => {
     const selectedSection = data.sections.find((section) => section.id === sectionId)
+    const defaultRole = VIEWER_ROLES.find((role) => sectionsFor(role).length)
     setEditingId(null)
     setNewVideoId(crypto.randomUUID())
     setError('')
     setDraft({
       ...emptyVideoDraft,
-      ...Object.fromEntries(VIEWER_ROLES.flatMap((role) => [
-        [`${role}Enabled`, selectedSection ? selectedSection.roles.includes(role) : role === 'operator'],
-        [`${role}Section`, selectedSection?.roles.includes(role) ? selectedSection.id : sectionsFor(role)[0]?.id || ''],
+      ...Object.fromEntries(USER_ROLES.flatMap((role) => [
+        [`${role}Enabled`, hasFullContentAccess(role) || (selectedSection ? selectedSection.roles.includes(role) : role === defaultRole)],
+        [`${role}Section`, selectedSection && canViewSection(selectedSection, role) ? selectedSection.id : sectionsFor(role)[0]?.id || ''],
       ])),
     })
     setFormOpen(true)
@@ -1377,9 +1378,9 @@ function VideosManager({ data, setData, saveState, persistedVideoIdsRef, onNotif
       thumbnailUrl: video.thumbnailUrl || '',
       duration: video.duration || '',
       featured: Boolean(video.featured),
-      ...Object.fromEntries(VIEWER_ROLES.flatMap((role) => [
-        [`${role}Enabled`, Boolean(video.assignments[role])],
-        [`${role}Section`, video.assignments[role] || sectionsFor(role)[0]?.id || ''],
+      ...Object.fromEntries(USER_ROLES.flatMap((role) => [
+        [`${role}Enabled`, hasFullContentAccess(role) || Boolean(video.assignments[role])],
+        [`${role}Section`, video.assignments[role] || (hasFullContentAccess(role) ? Object.values(video.assignments)[0] : '') || sectionsFor(role)[0]?.id || ''],
         [`${role}Locked`, Boolean(video.locked?.[role])],
         [`${role}Prerequisite`, video.prerequisites?.[role] || ''],
       ])),
@@ -1402,18 +1403,19 @@ function VideosManager({ data, setData, saveState, persistedVideoIdsRef, onNotif
       setError('Completa el título, la descripción y un enlace de video válido.')
       return
     }
-    if (!VIEWER_ROLES.some((role) => draft[`${role}Enabled`] && draft[`${role}Section`])) {
-      setError('Asigna el video al menos a un rol y una sección.')
+    const enabledRoles = USER_ROLES.filter((role) => draft[`${role}Enabled`])
+    if (enabledRoles.some((role) => !data.sections.some((section) => section.id === draft[`${role}Section`]))) {
+      setError('Selecciona una sección para cada rol habilitado. Administradores necesita una sección de referencia para organizar el video.')
       return
     }
     const assignments = {}
     const locked = {}
     const prerequisites = {}
-    for (const role of VIEWER_ROLES) {
+    for (const role of USER_ROLES) {
       if (!draft[`${role}Enabled`] || !draft[`${role}Section`]) continue
       assignments[role] = draft[`${role}Section`]
-      locked[role] = Boolean(draft[`${role}Locked`])
-      if (draft[`${role}Prerequisite`]) prerequisites[role] = draft[`${role}Prerequisite`]
+      locked[role] = !hasFullContentAccess(role) && Boolean(draft[`${role}Locked`])
+      if (!hasFullContentAccess(role) && draft[`${role}Prerequisite`]) prerequisites[role] = draft[`${role}Prerequisite`]
     }
     const payload = {
       title: draft.title.trim(),
@@ -1488,9 +1490,9 @@ function VideosManager({ data, setData, saveState, persistedVideoIdsRef, onNotif
     onNotify?.(`Video "${videoTitle}" eliminado correctamente`, { tone: 'danger' })
   }
   const source = getVideoSource(draft.url)
-  const filtered = data.videos.filter((video) => video.title.toLowerCase().includes(query.toLowerCase()))
-  const groupOrder = [...VIEWER_ROLES, 'both']
-  if (filtered.some((video) => getVideoAudience(video) === 'none')) groupOrder.push('none')
+  const filtered = data.videos.filter((video) => normalizeSearch(video.title + ' ' + video.description).includes(normalizeSearch(query))
+    && (audienceFilter === 'all' || canViewVideo(video, audienceFilter, data.sections)))
+  const groupOrder = [...VIEWER_ROLES, 'both', 'none']
   const libraryGroups = groupOrder.map((audience) => ({
     id: audience,
     ...AUDIENCE_META[audience],
@@ -1516,7 +1518,8 @@ function VideosManager({ data, setData, saveState, persistedVideoIdsRef, onNotif
             </div>
             <div className="assignment-box">
               <div><h3>Permisos y ubicación</h3><p>Elige exactamente quién lo verá y dónde aparecerá.</p></div>
-              {VIEWER_ROLES.map((role) => {
+              {USER_ROLES.map((role) => {
+                if (hasFullContentAccess(role)) return <div className="assignment-card enabled" key={role}><AdminAccessNotice /><div className="form-group"><label>Sección de referencia</label><select value={draft[`${role}Section`]} onChange={(event) => setDraft({ ...draft, [`${role}Section`]: event.target.value })}><option value="">Seleccionar…</option>{sectionsFor(role).map((section) => <option value={section.id} key={section.id}>{section.name}</option>)}</select><small>Organiza el video en esta sección. Administradores conserva acceso a toda la biblioteca.</small></div></div>
                 const enabledKey = `${role}Enabled`
                 const sectionKey = `${role}Section`
                 const lockedKey = `${role}Locked`
@@ -1529,7 +1532,7 @@ function VideosManager({ data, setData, saveState, persistedVideoIdsRef, onNotif
                 return (
                   <div className={`assignment-card ${enabled ? 'enabled' : ''}`} key={role}>
                     <label className="switch-line"><span className="role-avatar">{ROLE_META[role].short}</span><div><strong>{ROLE_META[role].label}</strong><small>{enabled ? 'Puede ver este video' : 'Sin acceso'}</small></div><input type="checkbox" checked={enabled} onChange={(event) => setDraft({ ...draft, [enabledKey]: event.target.checked })} /><i /></label>
-                    {enabled && <><div className="form-group"><label>Mostrar en la sección</label><select value={draft[sectionKey]} onChange={(event) => setDraft({ ...draft, [sectionKey]: event.target.value })}><option value="">Seleccionar…</option>{sectionsFor(role).map((section) => <option value={section.id} key={section.id}>{section.name}</option>)}</select></div><label className={`role-lock-toggle ${draft[lockedKey] ? 'is-locked' : ''}`}><input type="checkbox" checked={draft[lockedKey]} onChange={(event) => setDraft({ ...draft, [lockedKey]: event.target.checked })} /><span><LockKeyhole size={15} /></span><div><strong>Mostrar como bloqueado</strong><small>Verá la tarjeta, pero no podrá reproducir el video.</small></div><i /></label></>}
+                    {enabled && <><div className="form-group"><label>Mostrar en la sección</label><select value={draft[sectionKey]} onChange={(event) => setDraft({ ...draft, [sectionKey]: event.target.value })}><option value="">Seleccionar…</option>{data.sections.filter((section) => section.id === draft[sectionKey] && !canViewSection(section, role)).map((section) => <option value={section.id} key={section.id}>{section.name} · Oculta para este rol</option>)}{sectionsFor(role).map((section) => <option value={section.id} key={section.id}>{section.name}</option>)}</select></div><label className={`role-lock-toggle ${draft[lockedKey] ? 'is-locked' : ''}`}><input type="checkbox" checked={draft[lockedKey]} onChange={(event) => setDraft({ ...draft, [lockedKey]: event.target.checked })} /><span><LockKeyhole size={15} /></span><div><strong>Mostrar como bloqueado</strong><small>Verá la tarjeta, pero no podrá reproducir el video.</small></div><i /></label></>}
                     {enabled && <div className="form-group learning-requirement"><label htmlFor={'prerequisite-' + role}>Video previo obligatorio</label><select id={'prerequisite-' + role} value={draft[prerequisiteKey] || ''} onChange={(event) => setDraft({ ...draft, [prerequisiteKey]: event.target.value })}><option value="">Sin requisito · video independiente</option>{previousVideos.map((video) => <option value={video.id} key={video.id}>{video.title}</option>)}</select><small>Para desbloquear este video hay que completar el anterior y aprobar su cuestionario. Solo aparecen videos con cuestionario y reproducción verificable.</small>{draft[lockedKey] && <small>El bloqueo manual seguirá activo aunque se complete el requisito.</small>}</div>}
                   </div>
                 )
@@ -1553,7 +1556,7 @@ function VideosManager({ data, setData, saveState, persistedVideoIdsRef, onNotif
       <section className="panel manager-panel">
         <div className="manager-toolbar">
           <div><h2>Biblioteca organizada</h2><p>{data.videos.length} contenidos clasificados por audiencia</p></div>
-          <div className="toolbar-actions"><label className="search-field"><Search size={17} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Buscar video…" /></label><button className="primary-button" onClick={() => openNew()}><Plus size={17} /> Agregar video</button></div>
+          <div className="toolbar-actions"><label className="role-filter"><span>Acceso por rol</span><select value={audienceFilter} onChange={(event) => setAudienceFilter(event.target.value)}><option value="all">Todos los roles</option><RoleOptions /></select></label><label className="search-field"><Search size={17} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Buscar video…" /></label><button className="primary-button" onClick={() => openNew()}><Plus size={17} /> Agregar video</button></div>
         </div>
         <div className="video-library-groups">
           {visibleLibraryGroups.map((group) => (
@@ -1784,7 +1787,7 @@ function AdminVideoCard({ video, data, onEdit, onDelete }) {
         {!!lockedRoles.length && <span className="role-lock-statuses">{lockedRoles.map((role) => <span className="role-lock-status" key={role}><LockKeyhole size={9} /> {ROLE_META[role].short} bloqueado</span>)}</span>}
         <small>{video.duration}</small>
       </div>
-      <div className="admin-video-card__body"><div className="card-title-row"><h3>{video.title}</h3>{video.featured && <Sparkles size={15} />}</div><p>{video.description}</p><div className="assignment-tags">{Object.entries(video.assignments).map(([role, sectionId]) => <span className={isVideoLockedFor(video, role) ? 'is-locked' : ''} key={role}><b>{ROLE_META[role].short}</b>{getSection(sectionId)}{isVideoLockedFor(video, role) && <LockKeyhole size={10} />}</span>)}{video.quiz && <span><b><ClipboardList size={10} /></b>{video.quiz.questionCount} {video.quiz.questionCount === 1 ? 'pregunta' : 'preguntas'}</span>}</div></div>
+      <div className="admin-video-card__body"><div className="card-title-row"><h3>{video.title}</h3>{video.featured && <Sparkles size={15} />}</div><p>{video.description}</p><div className="assignment-tags"><span title="Acceso total automático"><b>{ROLE_META.admin.short}</b>{ROLE_META.admin.label}</span>{Object.entries(video.assignments).filter(([role]) => !hasFullContentAccess(role)).map(([role, sectionId]) => <span className={isVideoLockedFor(video, role) ? 'is-locked' : ''} key={role}><b>{ROLE_META[role]?.short || role}</b>{getSection(sectionId)}{isVideoLockedFor(video, role) && <LockKeyhole size={10} />}</span>)}{video.quiz && <span><b><ClipboardList size={10} /></b>{video.quiz.questionCount} {video.quiz.questionCount === 1 ? 'pregunta' : 'preguntas'}</span>}</div></div>
       <div className="admin-video-card__actions"><button onClick={onEdit}><Pencil size={15} /> Editar</button><button className="danger" onClick={onDelete}><Trash2 size={15} /></button></div>
     </article>
   )
@@ -1795,6 +1798,9 @@ const USERNAME_PATTERN = /^[a-z0-9._-]{3,32}$/
 
 function UsersManager({ onCreateUser, onUpdateUser, onNotify }) {
   const [users, setUsers] = useState([])
+  const [userQuery, setUserQuery] = useState('')
+  const [roleFilter, setRoleFilter] = useState('all')
+  const [statusFilter, setStatusFilter] = useState('all')
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState('')
   const [formOpen, setFormOpen] = useState(false)
@@ -1912,6 +1918,10 @@ function UsersManager({ onCreateUser, onUpdateUser, onNotify }) {
     }
   }
 
+  const filteredUsers = users.filter((user) => matchesUserSearch(user, userQuery)
+    && (roleFilter === 'all' || user.role === roleFilter)
+    && (statusFilter === 'all' || user.active === (statusFilter === 'active')))
+
   return (
     <div className="access-layout">
       <section className="panel access-panel manager-panel">
@@ -1928,7 +1938,7 @@ function UsersManager({ onCreateUser, onUpdateUser, onNotify }) {
             <div className="modal-panel__body user-edit-modal__fields">
             <div className="form-group"><label>Usuario</label><input value={draft.username} onChange={(event) => setDraft({ ...draft, username: event.target.value })} placeholder="ej. jperez" disabled={!!editingUser} autoFocus={!editingUser} /></div>
             <div className="form-group grow"><label>Nombre completo</label><input value={draft.displayName} onChange={(event) => setDraft({ ...draft, displayName: event.target.value })} placeholder="Nombre completo" /></div>
-            <div className="form-group"><label>Rol</label><select value={draft.role} onChange={(event) => setDraft({ ...draft, role: event.target.value })}>{USER_ROLES.map((role) => <option value={role} key={role}>{ROLE_META[role].label}</option>)}</select>{draft.role === 'admin' && <small>Puede administrar usuarios, contenido y configuración.</small>}</div>
+            <div className="form-group"><label>Rol</label><select value={draft.role} onChange={(event) => setDraft({ ...draft, role: event.target.value })}><RoleOptions /></select><small>{ROLE_META[draft.role]?.description}</small></div>
             <div className="form-group grow"><label>Cargo</label><input value={draft.jobTitle} onChange={(event) => setDraft({ ...draft, jobTitle: event.target.value })} placeholder="ej. Supervisor de bodega" /></div>
             <div className="form-group grow"><label>Área</label><input value={draft.department} onChange={(event) => setDraft({ ...draft, department: event.target.value })} placeholder="ej. Logística" /></div>
             {editingUser?.username === 'invitado.nissei' && <div className="form-group grow"><label>Foto al iniciar cuestionarios</label><select value={draft.requireQuizPhotoOverride == null ? 'default' : String(draft.requireQuizPhotoOverride)} onChange={(event) => setDraft({ ...draft, requireQuizPhotoOverride: event.target.value === 'default' ? null : event.target.value === 'true' })}><option value="default">Usar configuración general</option><option value="true">Solicitar foto</option><option value="false">No solicitar foto</option></select><small>Este ajuste se aplica solo al usuario invitado.</small></div>}
@@ -1941,10 +1951,17 @@ function UsersManager({ onCreateUser, onUpdateUser, onNotify }) {
           </div>
         )}
 
+        <div className="role-user-summary" aria-label="Usuarios por rol">{USER_ROLES.map((role) => <button type="button" key={role} className={roleFilter === role ? 'active' : ''} onClick={() => setRoleFilter(roleFilter === role ? 'all' : role)}><span>{ROLE_META[role].label}</span><strong>{users.filter((user) => user.role === role).length}</strong></button>)}</div>
+        <div className="progress-filters">
+          <label className="search-field progress-filters__search"><Search size={16} /><input type="search" value={userQuery} onChange={(event) => setUserQuery(event.target.value)} placeholder="Buscar por nombre, usuario, cargo, área o rol" aria-label="Buscar en usuarios y roles" /></label>
+          <label className="progress-filters__select"><span>Rol</span><select value={roleFilter} onChange={(event) => setRoleFilter(event.target.value)}><option value="all">Todos los roles</option><RoleOptions /></select></label>
+          <label className="progress-filters__select"><span>Estado</span><select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}><option value="all">Todos</option><option value="active">Activos</option><option value="inactive">Deshabilitados</option></select></label>
+          {!loading && !loadError && <span className="progress-filters__count">{filteredUsers.length} de {users.length} usuarios</span>}
+        </div>
         <div className="user-list">
           <div className="user-list__head"><span>Usuario</span><span>Rol</span><span>Estado</span><span>Acciones</span></div>
           {!loading && loadError && <p className="form-error access-error">{loadError}</p>}
-          {!loading && !loadError && users.map((user) => (
+          {!loading && !loadError && filteredUsers.map((user) => (
             <div className="user-row" key={user.userId}>
               <div className="section-identity"><span className="section-icon"><User size={18} /></span><div><strong>{user.displayName || user.username}</strong><small>@{user.username} · {user.jobTitle || 'Sin cargo'} · {user.department || 'Sin área'}</small></div></div>
               <span className="status-badge">{ROLE_META[user.role]?.label || user.role}</span>
@@ -1956,6 +1973,7 @@ function UsersManager({ onCreateUser, onUpdateUser, onNotify }) {
             </div>
           ))}
           {!loading && !loadError && !users.length && <EmptyState icon={UsersRound} title="Aún no hay usuarios" text="Crea una cuenta y asígnale uno de los cinco roles." />}
+          {!loading && !loadError && users.length > 0 && !filteredUsers.length && <EmptyState icon={Search} title="No encontramos usuarios" text="Prueba otra búsqueda o cambia los filtros." />}
         </div>
       </section>
       <aside className="security-card"><span><LockKeyhole size={22} /></span><h3>Cuentas individuales</h3><p>Cada usuario inicia sesión con su propio usuario y contraseña, administrados por Supabase Auth.</p><ul><li><Check size={14} /> Contraseñas fuera del frontend</li><li><Check size={14} /> Sesiones administradas por Supabase</li><li><Check size={14} /> Permisos RLS por rol</li></ul></aside>
@@ -1989,7 +2007,7 @@ function ProgressManager({ data }) {
       console.warn('No se pudieron leer los cuestionarios respondidos (¿falta aplicar la migración?):', quizError?.message)
       return []
     })
-    Promise.all([listManagedUsers(), listWatchProgress(), quizResultsPromise])
+    Promise.all([listManagedUsers({ includeAdmins: true }), listWatchProgress(), quizResultsPromise])
       .then(([usersResult, progressResult, quizResultsResult]) => {
         if (!active) return
         setUsers(usersResult)
@@ -2004,16 +2022,9 @@ function ProgressManager({ data }) {
   }, [])
 
   const eligibleVideoIdsByRole = useMemo(() => {
-    const result = Object.fromEntries(VIEWER_ROLES.map((role) => [role, new Set()]))
-    for (const role of VIEWER_ROLES) {
-      const visibleSectionIds = new Set(data.sections.filter((section) => section.roles.includes(role)).map((section) => section.id))
-      data.videos.forEach((video) => {
-        if (visibleSectionIds.has(video.assignments[role]) && !isVideoLockedFor(video, role)) {
-          result[role].add(video.id)
-        }
-      })
-    }
-    return result
+    return Object.fromEntries(USER_ROLES.map((role) => [role, new Set(
+      data.videos.filter((video) => canViewVideo(video, role, data.sections)).map((video) => video.id),
+    )]))
   }, [data.sections, data.videos])
 
   const quizVideoIds = useMemo(() => new Set(data.videos.filter((video) => video.quiz).map((video) => video.id)), [data.videos])
@@ -2049,12 +2060,10 @@ function ProgressManager({ data }) {
   }, [quizResults])
 
   const visibleUsers = useMemo(() => {
-    const normalize = (value) => String(value || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase()
-    const query = normalize(userQuery.trim())
+    const query = userQuery.trim()
     return users.filter((user) => {
       if (roleFilter !== 'all' && user.role !== roleFilter) return false
-      const searchable = normalize([user.displayName, user.username, user.jobTitle, user.department].join(' '))
-      if (query && !searchable.includes(query)) return false
+      if (!matchesUserSearch(user, query)) return false
       if (progressFilter === 'all') return true
       const eligible = eligibleVideoIdsByRole[user.role] || new Set()
       const completed = completedByUser.get(user.userId) || new Set()
@@ -2069,15 +2078,15 @@ function ProgressManager({ data }) {
   const videoActivityStats = useMemo(() => {
     return data.videos
       .map((video) => {
-        const eligibleRoles = VIEWER_ROLES.filter((role) => eligibleVideoIdsByRole[role]?.has(video.id))
-        const eligibleUsers = users.filter((user) => eligibleRoles.includes(user.role))
+        const eligibleRoles = USER_ROLES.filter((role) => eligibleVideoIdsByRole[role]?.has(video.id))
+        const eligibleUsers = visibleUsers.filter((user) => user.active && eligibleRoles.includes(user.role))
         const total = eligibleUsers.length
         const watchedCount = eligibleUsers.filter((user) => completedByUser.get(user.userId)?.has(video.id)).length
         const attemptedCount = eligibleUsers.filter((user) => attemptedQuizzesByUser.get(user.userId)?.has(video.id)).length
         return { id: video.id, title: video.title, hasQuiz: Boolean(video.quiz), total, watchedCount, attemptedCount }
       })
       .filter((row) => row.total > 0)
-  }, [data.videos, eligibleVideoIdsByRole, users, completedByUser, attemptedQuizzesByUser])
+  }, [data.videos, eligibleVideoIdsByRole, visibleUsers, completedByUser, attemptedQuizzesByUser])
 
   const openUserActivity = (user) => {
     setSelectedUser(user)
@@ -2094,10 +2103,11 @@ function ProgressManager({ data }) {
     setExportError('')
     try {
       const allAttempts = await listAllQuizAttempts()
-      const videosByRole = Object.fromEntries(VIEWER_ROLES.map((role) => [role, data.videos.filter((video) => eligibleVideoIdsByRole[role].has(video.id))]))
+      const videosByRole = Object.fromEntries(USER_ROLES.map((role) => [role, data.videos.filter((video) => eligibleVideoIdsByRole[role].has(video.id))]))
       await downloadUsersExcel({
         organization: data.organization,
-        users,
+        users: visibleUsers,
+        videos: data.videos,
         videosByRole,
         progress,
         quizResults,
@@ -2114,14 +2124,14 @@ function ProgressManager({ data }) {
     <div className="manager-stack">
       <section className="panel manager-panel">
         <div className="manager-toolbar">
-          <div><h2>Progreso por usuario</h2><p>Un video cuenta como visto al alcanzar el 100% de su duración; el cuestionario se suma como paso adicional.</p></div>
-          <button className="secondary-button" type="button" onClick={exportExcel} disabled={exporting || loading}><Download size={15} /> {exporting ? 'Generando…' : 'Descargar Excel'}</button>
+          <div><h2>Progreso por usuario</h2><p>Consulta los cinco roles. El avance usa los videos asignados, incluidos los bloqueados; Administradores tiene acceso total.</p></div>
+          <button className="secondary-button" type="button" onClick={exportExcel} disabled={exporting || loading || Boolean(loadError) || !visibleUsers.length}><Download size={15} /> {exporting ? 'Generando…' : 'Exportar usuarios filtrados'}</button>
         </div>
         {exportError && <p className="form-error access-error">{exportError}</p>}
         <VideoActivityChart stats={videoActivityStats} />
         <div className="progress-filters">
           <label className="search-field progress-filters__search"><Search size={16} /><input type="search" value={userQuery} onChange={(event) => setUserQuery(event.target.value)} placeholder="Buscar por nombre, usuario, cargo o área" aria-label="Buscar usuarios" /></label>
-          <label className="progress-filters__select"><span>Rol</span><select value={roleFilter} onChange={(event) => setRoleFilter(event.target.value)}><option value="all">Todos los roles</option>{VIEWER_ROLES.map((role) => <option value={role} key={role}>{ROLE_META[role].label}</option>)}</select></label>
+          <label className="progress-filters__select"><span>Rol</span><select value={roleFilter} onChange={(event) => setRoleFilter(event.target.value)}><option value="all">Todos los roles</option><RoleOptions /></select></label>
           <label className="progress-filters__select"><span>Avance</span><select value={progressFilter} onChange={(event) => setProgressFilter(event.target.value)}><option value="all">Todos</option><option value="started">Con videos vistos</option><option value="not-started">Sin videos vistos</option></select></label>
           {!loading && !loadError && <span className="progress-filters__count">{visibleUsers.length} de {users.length} usuarios</span>}
         </div>
@@ -2184,7 +2194,7 @@ function VideoActivityChart({ stats }) {
   return (
     <div className="activity-chart">
       <div className="activity-chart__head">
-        <div><h3>Actividad por video</h3><p>De las personas que pueden ver cada video, cuántas ya lo vieron o ya respondieron su cuestionario.</p></div>
+        <div><h3>Actividad por video</h3><p>Avance de los usuarios activos que coinciden con los filtros y tienen acceso a cada video.</p></div>
         <div className="activity-chart__toggle">
           <button type="button" className={metric === 'watched' ? 'active' : ''} onClick={() => setMetric('watched')}><Eye size={13} /> Videos vistos</button>
           <button type="button" className={metric === 'quiz' ? 'active' : ''} onClick={() => setMetric('quiz')}><ClipboardList size={13} /> Cuestionarios</button>
@@ -2426,6 +2436,21 @@ function AttemptPhotoPreview({ photoPath, attemptNumber }) {
   )
 }
 
+function useRoleContentSelection({ data, role, selectedDocument, setSelectedDocument, activeSection, setActiveSection }) {
+  useEffect(() => {
+    if (!selectedDocument) return
+    const fresh = (data.documents || []).find((item) => item.id === selectedDocument.id)
+    if (!canViewDocument(fresh, role, data.sections)) setSelectedDocument(null)
+    else if (fresh !== selectedDocument) setSelectedDocument(fresh)
+  }, [data.documents, data.sections, role, selectedDocument, setSelectedDocument])
+
+  useEffect(() => {
+    if (activeSection !== 'home' && !data.sections.some((section) => section.id === activeSection && canViewSection(section, role))) {
+      setActiveSection('home')
+    }
+  }, [activeSection, data.sections, role, setActiveSection])
+}
+
 function RolePreview({ data }) {
   const [role, setRole] = useState('operator')
   const [activeSection, setActiveSection] = useState('home')
@@ -2433,26 +2458,26 @@ function RolePreview({ data }) {
   const [selectedDocument, setSelectedDocument] = useState(null)
   const [query, setQuery] = useState('')
   const [navOpen, setNavOpen] = useState(false)
+  useRoleContentSelection({ data, role, selectedDocument, setSelectedDocument, activeSection, setActiveSection })
   const previewVideos = useMemo(() => withLearningAccess(data.videos.map((video) => ({ ...video, watched: false, quizResult: null })), data.sections, role), [data.videos, data.sections, role])
   useEffect(() => {
     if (!selectedVideo) return
     const freshVideo = previewVideos.find((video) => video.id === selectedVideo.id)
-    if (!freshVideo || !isVideoAssignedTo(freshVideo, role) || isVideoLockedFor(freshVideo, role)) {
+    if (!freshVideo || !canViewVideo(freshVideo, role, data.sections) || isVideoLockedFor(freshVideo, role)) {
       setSelectedVideo(null)
     } else if (freshVideo !== selectedVideo) {
       setSelectedVideo(freshVideo)
     }
-  }, [previewVideos, role, selectedVideo])
-  const sections = useMemo(() => [...data.sections].filter((section) => section.roles.includes(role)).sort((a, b) => a.order - b.order), [data.sections, role])
-  const visibleSectionIds = new Set(sections.map((section) => section.id))
-  const videos = previewVideos.filter((video) => visibleSectionIds.has(video.assignments[role]))
-  const documents = (data.documents || []).filter((document) => visibleSectionIds.has(document.sectionId) && (!document.audience || document.audience === 'both' || document.audience === role))
+  }, [previewVideos, data.sections, role, selectedVideo])
+  const sections = useMemo(() => [...data.sections].filter((section) => canViewSection(section, role)).sort((a, b) => a.order - b.order), [data.sections, role])
+  const videos = previewVideos.filter((video) => canViewVideo(video, role, data.sections))
+  const documents = (data.documents || []).filter((document) => canViewDocument(document, role, data.sections))
   const blockedVideos = videos.filter((video) => isVideoLockedFor(video, role))
   const availableVideos = videos.filter((video) => !isVideoLockedFor(video, role))
   const activeSectionData = sections.find((section) => section.id === activeSection)
   const featured = availableVideos.find((video) => video.featured) || availableVideos[0]
   const filtered = videos.filter((video) => {
-    const belongs = activeSection === 'home' || video.assignments[role] === activeSection
+    const belongs = activeSection === 'home' || videoBelongsToSection(video, role, activeSection)
     const matches = `${video.title} ${video.description}`.toLowerCase().includes(query.toLowerCase())
     return belongs && matches
   })
@@ -2482,13 +2507,14 @@ function RolePreview({ data }) {
   }
 
   const openVideo = (video) => {
-    if (!video || isVideoLockedFor(video, role)) return
+    if (!canViewVideo(video, role, data.sections) || isVideoLockedFor(video, role)) return
     setSelectedVideo(video)
   }
 
   return (
     <div className="manager-stack">
-      <section className="preview-switcher"><div><span>Visualizando como</span><strong>{ROLE_META[role].label} · {availableVideos.length} disponibles · {blockedVideos.length} bloqueados</strong></div><label className="preview-role-select">Rol <select aria-label="Rol de la vista previa" value={role} onChange={(event) => switchRole(event.target.value)}>{VIEWER_ROLES.map((item) => <option value={item} key={item}>{ROLE_META[item].label}</option>)}</select></label></section>
+      <section className="preview-switcher"><div><span>Visualizando como</span><strong>{ROLE_META[role].label} · {availableVideos.length} disponibles · {blockedVideos.length} bloqueados</strong></div><label className="preview-role-select">Rol <select aria-label="Rol de la vista previa" value={role} onChange={(event) => switchRole(event.target.value)}><RoleOptions /></select></label></section>
+      {hasFullContentAccess(role) && <AdminAccessNotice />}
       <section className="panel role-preview-frame">
         <header className="role-preview-chrome"><div aria-hidden="true"><i /><i /><i /></div><span><Eye size={13} /> Vista interactiva: navega como lo haría este rol</span><button type="button" onClick={resetPreview}><Home size={14} /> Reiniciar vista</button></header>
         <div className="role-preview-app">
@@ -2499,7 +2525,7 @@ function RolePreview({ data }) {
               <small className="sidebar-label">EXPLORAR</small>
               <button className={activeSection === 'home' ? 'active' : ''} onClick={() => navigate('home')}><Home size={18} /><span>Inicio</span></button>
               <small className="sidebar-label sidebar-label--spaced">MI CONTENIDO</small>
-              {sections.map((section) => { const Icon = ICONS[section.icon] || Layers3; const count = documents.filter((document) => document.sectionId === section.id).length + videos.filter((video) => video.assignments[role] === section.id).length; return <button className={activeSection === section.id ? 'active' : ''} onClick={() => navigate(section.id)} key={section.id}><Icon size={18} /><span>{section.name}</span><small>{count}</small></button> })}
+              {sections.map((section) => { const Icon = ICONS[section.icon] || Layers3; const count = documents.filter((document) => document.sectionId === section.id).length + videos.filter((video) => videoBelongsToSection(video, role, section.id)).length; return <button className={activeSection === section.id ? 'active' : ''} onClick={() => navigate(section.id)} key={section.id}><Icon size={18} /><span>{section.name}</span><small>{count}</small></button> })}
             </nav>
             <div className="sidebar-help"><span><CircleHelp size={16} /></span><div><strong>¿Necesitas ayuda?</strong><small>{data.settings?.supportMessage || 'Contacta a tu administrador'}</small></div></div>
             <div className="role-preview-sidebar-foot"><Eye size={15} /> Vista simulada</div>
@@ -2532,16 +2558,14 @@ function RolePreview({ data }) {
 
 function ViewerApp({ role, userId, data, theme, toggleTheme, onLogout, onRefresh }) {
   const [completedVideoIds, setCompletedVideoIds] = useState(() => new Set())
-  const sections = useMemo(() => [...data.sections].filter((section) => section.roles.includes(role)).sort((a, b) => a.order - b.order), [data.sections, role])
+  const sections = useMemo(() => [...data.sections].filter((section) => canViewSection(section, role)).sort((a, b) => a.order - b.order), [data.sections, role])
   const targetedVideos = useMemo(() => {
-    const visibleSectionIds = new Set(sections.map((section) => section.id))
     return data.videos
-      .filter((video) => visibleSectionIds.has(video.assignments[role]))
+      .filter((video) => canViewVideo(video, role, sections))
       .map((video) => completedVideoIds.has(video.id) && !video.watched ? { ...video, watched: true } : video)
   }, [completedVideoIds, data.videos, role, sections])
   const targetedDocuments = useMemo(() => {
-    const visibleSectionIds = new Set(sections.map((section) => section.id))
-    return (data.documents || []).filter((document) => visibleSectionIds.has(document.sectionId) && (!document.audience || document.audience === 'both' || document.audience === role))
+    return (data.documents || []).filter((document) => canViewDocument(document, role, sections))
   }, [data.documents, role, sections])
   const playableVideos = useMemo(() => targetedVideos.filter((video) => !isVideoLockedFor(video, role)), [role, targetedVideos])
   const [activeSection, setActiveSection] = useState('home')
@@ -2551,18 +2575,20 @@ function ViewerApp({ role, userId, data, theme, toggleTheme, onLogout, onRefresh
   const [menuOpen, setMenuOpen] = useState(false)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
 
+  useRoleContentSelection({ data, role, selectedDocument, setSelectedDocument, activeSection, setActiveSection })
+
   useEffect(() => {
     if (!selectedVideo) return
     const freshVideo = data.videos.find((video) => video.id === selectedVideo.id)
-    if (!freshVideo || !isVideoAssignedTo(freshVideo, role) || isVideoLockedFor(freshVideo, role)) {
+    if (!freshVideo || !canViewVideo(freshVideo, role, data.sections) || isVideoLockedFor(freshVideo, role)) {
       setSelectedVideo(null)
     } else if (freshVideo !== selectedVideo) {
       setSelectedVideo(freshVideo)
     }
-  }, [data.videos, role, selectedVideo])
+  }, [data.videos, data.sections, role, selectedVideo])
 
   const openVideo = (video) => {
-    if (!video || isVideoLockedFor(video, role)) return
+    if (!canViewVideo(video, role, data.sections) || isVideoLockedFor(video, role)) return
     setSelectedVideo(video)
   }
 
@@ -2587,7 +2613,7 @@ function ViewerApp({ role, userId, data, theme, toggleTheme, onLogout, onRefresh
   }
 
   const filtered = targetedVideos.filter((video) => {
-    const belongs = activeSection === 'home' || video.assignments[role] === activeSection
+    const belongs = activeSection === 'home' || videoBelongsToSection(video, role, activeSection)
     const matches = `${video.title} ${video.description}`.toLowerCase().includes(query.toLowerCase())
     return belongs && matches
   })
@@ -2620,7 +2646,7 @@ function ViewerApp({ role, userId, data, theme, toggleTheme, onLogout, onRefresh
           <small className="sidebar-label">EXPLORAR</small>
           <button className={activeSection === 'home' ? 'active' : ''} onClick={() => navigate('home')} title={sidebarCollapsed ? 'Inicio' : undefined}><Home size={19} /><span>Inicio</span></button>
           <small className="sidebar-label sidebar-label--spaced">MI CONTENIDO</small>
-          {sections.map((section) => { const Icon = ICONS[section.icon] || Layers3; const count = targetedDocuments.filter((document) => document.sectionId === section.id).length + targetedVideos.filter((video) => video.assignments[role] === section.id).length; return <button className={activeSection === section.id ? 'active' : ''} onClick={() => navigate(section.id)} title={sidebarCollapsed ? section.name : undefined} key={section.id}><Icon size={19} /><span>{section.name}</span><small>{count}</small></button> })}
+          {sections.map((section) => { const Icon = ICONS[section.icon] || Layers3; const count = targetedDocuments.filter((document) => document.sectionId === section.id).length + targetedVideos.filter((video) => videoBelongsToSection(video, role, section.id)).length; return <button className={activeSection === section.id ? 'active' : ''} onClick={() => navigate(section.id)} title={sidebarCollapsed ? section.name : undefined} key={section.id}><Icon size={19} /><span>{section.name}</span><small>{count}</small></button> })}
         </nav>
         <div className="sidebar-help"><span><CircleHelp size={17} /></span><div><strong>¿Necesitas ayuda?</strong><small>{data.settings?.supportMessage || 'Contacta a tu administrador'}</small></div></div>
         <div className="sidebar__bottom">{data.settings?.allowLightMode !== false && <ThemeToggle theme={theme} onToggle={toggleTheme} />}<button className="sidebar-action" onClick={onLogout} title={sidebarCollapsed ? 'Cerrar sesión' : undefined}><LogOut size={18} /><span>Cerrar sesión</span></button></div>
@@ -2664,9 +2690,9 @@ function ViewerHome({ role, settings, videos, documents, sections, featured, loc
         </section>
       )}
       <div className="viewer-section-heading"><div><span className="eyebrow eyebrow--plain">RECIENTES</span><h2>Continúa explorando</h2></div><span>{availableCount} disponibles{lockedCount ? ` · ${lockedCount} bloqueados` : ''}</span></div>
-      <div className="viewer-video-grid">{recent.slice(0, 6).map((video) => <ViewerVideoCard role={role} video={video} section={sections.find((item) => item.id === video.assignments[role])} onPlay={() => onPlay(video)} key={video.id} />)}</div>
+      <div className="viewer-video-grid">{recent.slice(0, 6).map((video) => <ViewerVideoCard role={role} video={video} section={sections.find((item) => videoBelongsToSection(video, role, item.id))} onPlay={() => onPlay(video)} key={video.id} />)}</div>
       {!videos.length && !documents.length && <EmptyState icon={Film} title="Todavía no hay contenido" text="El administrador aún no ha habilitado archivos para tu perfil." />}
-      <section className="category-strip"><div className="viewer-section-heading"><div><span className="eyebrow eyebrow--plain">SECCIONES</span><h2>Explora por categoría</h2></div></div><div className="category-grid">{sections.map((section) => { const Icon = ICONS[section.icon] || Layers3; const videoCount = videos.filter((video) => video.assignments[role] === section.id).length; const documentCount = documents.filter((document) => document.sectionId === section.id).length; return <button onClick={() => onSection(section.id)} key={section.id}><span><Icon size={20} /></span><div><strong>{section.name}</strong><small>{videoCount} videos · {documentCount} documentos</small></div><ChevronRight size={17} /></button> })}</div></section>
+      <section className="category-strip"><div className="viewer-section-heading"><div><span className="eyebrow eyebrow--plain">SECCIONES</span><h2>Explora por categoría</h2></div></div><div className="category-grid">{sections.map((section) => { const Icon = ICONS[section.icon] || Layers3; const videoCount = videos.filter((video) => videoBelongsToSection(video, role, section.id)).length; const documentCount = documents.filter((document) => document.sectionId === section.id).length; return <button onClick={() => onSection(section.id)} key={section.id}><span><Icon size={20} /></span><div><strong>{section.name}</strong><small>{videoCount} videos · {documentCount} documentos</small></div><ChevronRight size={17} /></button> })}</div></section>
       {lockedCount > 0 && <div className="locked-notice"><LockKeyhole size={18} /><div><strong>Contenido bloqueado por el administrador</strong><p>{lockedCount} {lockedCount === 1 ? 'video aparece bloqueado' : 'videos aparecen bloqueados'} en tu biblioteca. Puedes identificarlos, pero no abrirlos ni reproducirlos.</p></div></div>}
     </div>
   )
@@ -3126,12 +3152,12 @@ function VideoPlayerPage({ video, role, userId, data, onBack, onPlay, onComplete
     catch { setRefreshError('Tu resultado se guardó. Falta actualizar los videos disponibles.') }
   }
 
-  if (!isVideoAssignedTo(video, role) || isVideoLockedFor(video, role)) {
+  if (!canViewVideo(video, role, data.sections) || isVideoLockedFor(video, role)) {
     return <div className="player-page"><button className="back-button" onClick={onBack}><ArrowLeft size={17} /> Volver a la biblioteca</button><div className="player-blocked-state"><span><LockKeyhole size={28} /></span><h2>Este video está bloqueado</h2><p>El administrador no ha habilitado su reproducción para tu rol.</p></div></div>
   }
   const source = getPersistedVideoSource(video)
-  const section = data.sections.find((item) => item.id === video.assignments[role])
-  const related = data.videos.filter((item) => item.id !== video.id && item.assignments[role] === video.assignments[role] && !isVideoLockedFor(item, role)).slice(0, 3)
+  const section = data.sections.find((item) => videoBelongsToSection(video, role, item.id))
+  const related = data.videos.filter((item) => item.id !== video.id && section && canViewVideo(item, role, data.sections) && videoBelongsToSection(item, role, section.id) && !isVideoLockedFor(item, role)).slice(0, 3)
   const isWatched = Boolean(video.watched) || justCompleted
   const hasQuiz = Boolean(video.quiz)
   const quizPassed = Boolean(video.quizResult?.passed) || justPassed

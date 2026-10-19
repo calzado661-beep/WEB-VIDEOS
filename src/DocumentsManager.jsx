@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react'
-import { ROLE_META, VIEWER_ROLES } from './data.js'
-import { Check, FileText, Pencil, ShieldCheck, Trash2, UploadCloud, X } from 'lucide-react'
+import { DOCUMENT_AUDIENCE_LABELS } from './data.js'
+import { AdminAccessNotice, DocumentAudienceOptions, RoleOptions } from './RoleOptions'
+import { canViewDocument, normalizeSearch } from './roleAccess.js'
+import { Check, FileText, Pencil, Search, ShieldCheck, Trash2, UploadCloud, X } from 'lucide-react'
 import {
   deleteSectionDocument,
   updateSectionDocumentAudience,
@@ -9,7 +11,7 @@ import {
 } from './lib/videoHubApi'
 
 const errorMessage = (error, fallback) => error instanceof Error && error.message ? error.message : fallback
-const AUDIENCE_LABELS = { ...Object.fromEntries(VIEWER_ROLES.map((role) => [role, ROLE_META[role].label])), both: 'Todos los roles de la sección' }
+const AUDIENCE_LABELS = DOCUMENT_AUDIENCE_LABELS
 
 function formatFileSize(bytes) {
   if (!Number.isFinite(bytes) || bytes <= 0) return '—'
@@ -30,6 +32,8 @@ export default function DocumentsManager({ data, setData, onNotify, sectionId = 
   const [editingTitle, setEditingTitle] = useState('')
   const [busyId, setBusyId] = useState(null)
   const [fileInputKey, setFileInputKey] = useState(0)
+  const [query, setQuery] = useState('')
+  const [roleFilter, setRoleFilter] = useState('all')
 
   useEffect(() => {
     if (documentSections.length && (sectionId || !documentSections.some((section) => section.id === draft.sectionId))) {
@@ -116,6 +120,8 @@ export default function DocumentsManager({ data, setData, onNotify, sectionId = 
 
   const documents = [...(data.documents || [])]
     .filter((document) => !sectionId || document.sectionId === sectionId)
+    .filter((document) => normalizeSearch(document.title + ' ' + document.fileName).includes(normalizeSearch(query)))
+    .filter((document) => roleFilter === 'all' || canViewDocument(document, roleFilter, data.sections))
     .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
 
   return (
@@ -126,15 +132,18 @@ export default function DocumentsManager({ data, setData, onNotify, sectionId = 
           <form className="document-upload-form" onSubmit={submitDocument}>
             <div className="form-group"><label>Título visible</label><input value={draft.title} onChange={(event) => setDraft({ ...draft, title: event.target.value })} maxLength="180" placeholder="Ej. Manual de seguridad" /></div>
             {!sectionId && <div className="form-group"><label>Sección</label><select value={draft.sectionId} onChange={(event) => setDraft({ ...draft, sectionId: event.target.value })}>{documentSections.map((section) => <option value={section.id} key={section.id}>{section.name}</option>)}</select></div>}
-            <div className="form-group"><label htmlFor="document-audience">Visible para</label><select id="document-audience" value={draft.audience} onChange={(event) => setDraft({ ...draft, audience: event.target.value })}><option value="both">Todos los roles de la sección</option>{VIEWER_ROLES.map((role) => <option value={role} key={role}>{ROLE_META[role].label}</option>)}</select></div>
+            <div className="form-group"><label htmlFor="document-audience">Visible para</label><select id="document-audience" value={draft.audience} onChange={(event) => setDraft({ ...draft, audience: event.target.value })}><DocumentAudienceOptions /></select><small>Los administradores siempre tienen acceso. Los demás roles también necesitan tener visible la sección.</small></div>
             <div className="form-group document-file-field"><label>Archivo</label><input key={fileInputKey} type="file" accept=".pdf,.doc,.docx,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document" onChange={(event) => setDraft({ ...draft, file: event.target.files?.[0] || null })} /></div>
             <button className="primary-button" type="submit" disabled={!uploadsEnabled || uploading || !draft.title.trim() || !(sectionId || draft.sectionId) || !draft.file}>{uploading ? null : <UploadCloud size={17} />}{uploading ? 'Subiendo…' : uploadsEnabled ? 'Guardar documento' : 'Esperando guardado…'}</button>
           </form>
         ) : <EmptyDocuments title="Crea una sección" text="Crea una sección para poder publicar documentos." />}
       </section>
 
+      <AdminAccessNotice />
+
       <section className="panel document-library-panel">
         <div className="panel-heading"><div><h2>Documentos publicados</h2><p>Cambia el título o el rol, o elimina archivos. La sección también debe estar visible para ese rol.</p></div><span className="count-chip">{documents.length} archivo{documents.length === 1 ? '' : 's'}</span></div>
+        <div className="progress-filters"><label className="search-field progress-filters__search"><Search size={16} /><input type="search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Buscar documento…" aria-label="Buscar documento" /></label><label className="progress-filters__select"><span>Acceso por rol</span><select value={roleFilter} onChange={(event) => setRoleFilter(event.target.value)}><option value="all">Todos los roles</option><RoleOptions /></select></label></div>
         <div className="document-admin-grid">
           {documents.map((document) => {
             const section = data.sections.find((item) => item.id === document.sectionId)
@@ -146,13 +155,13 @@ export default function DocumentsManager({ data, setData, onNotify, sectionId = 
                   <small>{section?.name || 'Sección'} · {formatFileSize(document.fileSize)}</small>
                   {editingId === document.id ? <div className="document-title-edit"><input value={editingTitle} maxLength="180" onChange={(event) => setEditingTitle(event.target.value)} autoFocus /><button type="button" onClick={() => saveTitle(document)} disabled={busyId === document.id}><Check size={15} /></button><button type="button" onClick={() => setEditingId(null)}><X size={15} /></button></div> : <h3>{document.title}</h3>}
                   <p>{document.fileName}</p>
-                  <label className="document-audience-control">Visible para <select value={document.audience || 'both'} onChange={(event) => changeAudience(document, event.target.value)} disabled={Boolean(busyId)} aria-label={'Visibilidad de ' + document.title}><option value="both">Todos los roles de la sección</option>{VIEWER_ROLES.map((role) => <option value={role} key={role}>{ROLE_META[role].label}</option>)}</select></label>
+                  <label className="document-audience-control">Visible para <select value={document.audience || 'both'} onChange={(event) => changeAudience(document, event.target.value)} disabled={Boolean(busyId)} aria-label={'Visibilidad de ' + document.title}><DocumentAudienceOptions /></select></label>
                 </div>
                 <div className="document-admin-card__actions"><button type="button" onClick={() => { setEditingId(document.id); setEditingTitle(document.title) }} disabled={Boolean(busyId)}><Pencil size={15} /> Editar título</button><button type="button" className="danger" onClick={() => removeDocument(document)} disabled={Boolean(busyId)}><Trash2 size={15} /> Eliminar</button></div>
               </article>
             )
           })}
-          {!documents.length && <EmptyDocuments title="Aún no hay documentos" text="Los documentos que subas aparecerán aquí organizados por sección." />}
+          {!documents.length && <EmptyDocuments title={query || roleFilter !== 'all' ? 'No encontramos documentos' : 'Aún no hay documentos'} text={query || roleFilter !== 'all' ? 'Prueba otra búsqueda o cambia el filtro de rol.' : 'Los documentos que subas aparecerán aquí organizados por sección.'} />}
         </div>
       </section>
     </div>

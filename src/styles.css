@@ -643,3 +643,23 @@ button { cursor: pointer; }
 .preview-role-select { display: flex; align-items: center; gap: 9px; color: var(--muted); font-size: 10px; }
 .preview-role-select select { min-width: 160px; padding: 9px 12px; color: var(--text); border: 1px solid var(--border); border-radius: 8px; background: var(--bg-soft); }
 .row-actions button:disabled { opacity: .35; cursor: not-allowed; }
+
+.admin-access-note { display: grid; gap: 5px; padding: 13px 15px; color: var(--muted); border: 1px solid var(--border-strong); border-radius: 9px; background: var(--gold-soft); font-size: 10px; line-height: 1.5; }
+.admin-access-note strong { color: var(--text); font-size: 11px; }
+.role-filter { display: grid; gap: 5px; min-width: 150px; color: var(--muted); font-size: 9px; }
+.role-filter select { min-height: 38px; max-width: 100%; padding: 0 10px; color: var(--text); border: 1px solid var(--border); border-radius: 8px; background: var(--bg-soft); font: inherit; font-size: 10px; }
+.role-user-summary { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px; padding: 16px 23px; border-bottom: 1px solid var(--border); }
+.role-user-summary button { display: flex; flex-direction: column; align-items: flex-start; gap: 7px; padding: 11px; color: var(--muted); border: 1px solid var(--border); border-radius: 8px; background: var(--bg-soft); text-align: left; font-size: 9px; }
+.role-user-summary button.active { color: var(--text); border-color: var(--gold); background: var(--gold-soft); }
+.role-user-summary strong { color: var(--text); font-size: 19px; }
+.role-checks button:disabled, .role-toggles button:disabled { opacity: 1; cursor: default; border-style: dashed; }
+.toolbar-actions { flex-wrap: wrap; }
+.quiz-attempt-filters { display: flex; align-items: end; flex-wrap: wrap; gap: 10px; }
+.quiz-attempt-filters .quiz-attempt-search { flex: 1 1 180px; width: auto; }
+.document-upload-form .form-group { min-width: 0; }
+.document-audience-control select { max-width: 100%; }
+@media (max-width: 700px) {
+  .role-user-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); padding: 14px 15px; }
+  .role-user-summary button:last-child { grid-column: 1 / -1; }
+  .toolbar-actions .role-filter, .quiz-attempt-filters .role-filter { flex: 1 1 150px; }
+}

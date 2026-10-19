@@ -7,6 +7,7 @@ import {
 } from './_shared/supabase-server.js'
 
 import { USER_ROLES as MANAGED_ROLES } from '../../src/data.js'
+import { getRoleAvailabilityError } from './_shared/role-availability.js'
 const USERNAME_PATTERN = /^[a-z0-9._-]{3,32}$/
 const MIN_PASSWORD_LENGTH = 8
 const MAX_PASSWORD_LENGTH = 128
@@ -79,6 +80,9 @@ export default async function createUser(request) {
     if (!department) {
       return jsonResponse({ error: 'Escribe el área del usuario.' }, 400)
     }
+
+    const unavailableRole = await getRoleAvailabilityError(serviceClient, accessContext.organizationId, role)
+    if (unavailableRole) return jsonResponse(unavailableRole.body, unavailableRole.status)
 
     const { data: existingProfile, error: existingProfileError } = await serviceClient
       .from('profiles')

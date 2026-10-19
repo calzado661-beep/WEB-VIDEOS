@@ -8,7 +8,7 @@ const callerId = '10000000-0000-4000-8000-000000000001'
 const targetId = '10000000-0000-4000-8000-000000000002'
 const organizationId = '10000000-0000-4000-8000-000000000003'
 
-function mockSupabase(t, { callerRole = 'admin', active = true, targetInOrganization = true } = {}) {
+function mockSupabase(t, { callerRole = 'admin', active = true, targetInOrganization = true, installedRoles = USER_ROLES } = {}) {
   const originalFetch = globalThis.fetch
   const configuration = {
     SUPABASE_URL: 'https://roles-test.supabase.co',
@@ -31,6 +31,12 @@ function mockSupabase(t, { callerRole = 'admin', active = true, targetInOrganiza
       return respond({ id: targetId })
     }
     if (url.pathname === '/rest/v1/profiles') {
+      if (method === 'GET' && url.searchParams.has('role')) {
+        assert.equal(url.searchParams.get('organization_id'), `eq.${organizationId}`)
+        const role = url.searchParams.get('role').replace(/^eq\./, '')
+        return installedRoles.includes(role) ? respond([])
+          : new Response(JSON.stringify({ code: '22P02', message: `invalid input value for enum app_role: "${role}"` }), { status: 400, headers: { 'content-type': 'application/json' } })
+      }
       if (method === 'GET' && url.searchParams.has('username')) return respond([])
       if (method === 'GET') {
         assert.equal(url.searchParams.get('organization_id'), `eq.${organizationId}`)
@@ -100,5 +106,18 @@ test('una cuenta deshabilitada no administra usuarios aunque tenga rol admin', a
   const writes = mockSupabase(t, { active: false })
   assert.equal((await createUser(request({ ...userDraft, role: 'salesperson' }))).status, 403)
   assert.equal((await updateUser(request({ userId: targetId, role: 'management' }))).status, 403)
+  assert.equal(writes.length, 0)
+})
+
+test('una migración pendiente no crea cuentas ni cambia contraseñas parcialmente', async (t) => {
+  const writes = mockSupabase(t, { installedRoles: ['admin', 'operator', 'boss'] })
+  for (const role of ['salesperson', 'management']) {
+    const created = await createUser(request({ ...userDraft, role }))
+    assert.equal(created.status, 409)
+    assert.equal((await created.json()).code, 'ROLE_SCHEMA_PENDING')
+    const updated = await updateUser(request({ userId: targetId, role, newPassword: 'new-password' }))
+    assert.equal(updated.status, 409)
+    assert.equal((await updated.json()).code, 'ROLE_SCHEMA_PENDING')
+  }
   assert.equal(writes.length, 0)
 })

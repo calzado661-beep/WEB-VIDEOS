@@ -77,14 +77,15 @@ function addStyledSheet(workbook, name, headers, rows) {
  * `exceljs` se carga con import() dinámico (no al abrir la app) porque solo
  * lo necesita el administrador, al hacer clic en "Descargar Excel".
  */
-export async function buildUsersWorkbook({ organization, users, videosByRole, progress, quizResults, quizAttempts }) {
+export async function buildUsersWorkbook({ organization, users, videos = [], videosByRole, progress, quizResults, quizAttempts }) {
   const ExcelJS = (await import('exceljs')).default
 
   const usersById = new Map(users.map((user) => [user.userId, user]))
-  const videosById = new Map()
+  const videosById = new Map(videos.map((video) => [video.id, video]))
   Object.values(videosByRole).forEach((videos) => {
     videos.forEach((video) => videosById.set(video.id, video))
   })
+  const selectedAttempts = quizAttempts.filter((attempt) => usersById.has(attempt.userId))
 
   const watchedSet = new Set(
     progress.filter((row) => row.completed).map((row) => `${row.userId}:${row.videoId}`),
@@ -139,12 +140,13 @@ export async function buildUsersWorkbook({ organization, users, videosByRole, pr
   const videoHeaders = ['Usuario', 'Nombre completo', 'Rol', 'Video', 'Visto', 'Tiene cuestionario', 'Intentos', 'Mejor puntaje %', 'Aprobado']
 
   // Hoja 3 — Intentos de cuestionario
-  const attemptRows = quizAttempts.map((attempt) => {
+  const attemptRows = selectedAttempts.map((attempt) => {
     const user = usersById.get(attempt.userId)
     const video = videosById.get(attempt.videoId)
     return {
       Usuario: user?.username || attempt.userId,
       'Nombre completo': user?.displayName || '',
+      Rol: ROLE_META[user?.role]?.label || user?.role || '',
       Video: video?.title || attempt.videoId,
       Intento: attempt.attemptNumber,
       'Puntaje %': attempt.scorePercent,
@@ -152,17 +154,18 @@ export async function buildUsersWorkbook({ organization, users, videosByRole, pr
       Fecha: formatDate(attempt.createdAt),
     }
   })
-  const attemptHeaders = ['Usuario', 'Nombre completo', 'Video', 'Intento', 'Puntaje %', 'Aprobado', 'Fecha']
+  const attemptHeaders = ['Usuario', 'Nombre completo', 'Rol', 'Video', 'Intento', 'Puntaje %', 'Aprobado', 'Fecha']
 
   // Hoja 4 — Respuestas por pregunta
   const answerRows = []
-  quizAttempts.forEach((attempt) => {
+  selectedAttempts.forEach((attempt) => {
     const user = usersById.get(attempt.userId)
     const video = videosById.get(attempt.videoId)
-    attempt.answers.forEach((answer) => {
+    ;(attempt.answers || []).forEach((answer) => {
       answerRows.push({
         Usuario: user?.username || attempt.userId,
         'Nombre completo': user?.displayName || '',
+        Rol: ROLE_META[user?.role]?.label || user?.role || '',
         Video: video?.title || attempt.videoId,
         Intento: attempt.attemptNumber,
         Pregunta: answer.prompt,
@@ -172,7 +175,7 @@ export async function buildUsersWorkbook({ organization, users, videosByRole, pr
       })
     })
   })
-  const answerHeaders = ['Usuario', 'Nombre completo', 'Video', 'Intento', 'Pregunta', 'Marcó', '¿Acertó?', 'Respuesta correcta']
+  const answerHeaders = ['Usuario', 'Nombre completo', 'Rol', 'Video', 'Intento', 'Pregunta', 'Marcó', '¿Acertó?', 'Respuesta correcta']
 
   const workbook = new ExcelJS.Workbook()
   workbook.creator = organization

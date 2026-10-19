@@ -39,6 +39,7 @@ test('secuencias e intentos en PostgreSQL', async (t) => {
     '20261006120229_guest_quiz_photo_preference.sql',
     '20261019202553_operational_role_values.sql',
     '20261019202600_operational_role_permissions.sql',
+    '20261019222833_operational_roles_consistency.sql',
   ]
   for (const name of migrations) {
     const sql = (await readFile(new URL('../supabase/migrations/' + name, import.meta.url), 'utf8'))
@@ -92,9 +93,62 @@ test('secuencias e intentos en PostgreSQL', async (t) => {
     const roles = await query("select unnest(enum_range(null::public.app_role))::text as role")
     assert.deepEqual(roles.map((row) => row.role), USER_ROLES)
     const sectionRoles = await query('select role::text,visible from public.section_roles where section_id=$1 order by role', [section])
-    assert.equal(sectionRoles.length, VIEWER_ROLES.length)
+    assert.equal(sectionRoles.length, USER_ROLES.length)
     assert.ok(sectionRoles.filter((row) => ['salesperson', 'management'].includes(row.role)).every((row) => !row.visible))
-    await rejects('insert into public.section_roles(section_id,organization_id,role) values ($1,$2,\'admin\')', [section, org], /check constraint/)
+    assert.equal(sectionRoles.find((row) => row.role === 'admin').visible, true)
+    await rejects("update public.section_roles set visible=false where section_id=$1 and role='admin'", [section], /check constraint/)
+    await asUser(admin)
+    const configuration = (await query('select public.get_role_configuration() as value'))[0].value
+    assert.equal(configuration.version, 3)
+    assert.deepEqual(configuration.userRoles, USER_ROLES)
+    await db.exec('set role service_role')
+    assert.equal((await query('select public.get_role_configuration() as value'))[0].value.version, 3)
+    await db.exec('set role anon')
+    await rejects('select public.get_role_configuration()', [], /permission denied/)
+  })
+
+  await subtest('los documentos reservados a Administradores quedan protegidos también en Storage', async () => {
+    const path = `${org}/${section}/admin-only.pdf`
+    await query("update public.section_roles set visible=true where section_id=$1", [section])
+    await query(`insert into public.section_documents(organization_id,section_id,title,file_name,mime_type,file_size,storage_object_path,audience)
+      values ($1,$2,'Privado','private.pdf','application/pdf',10,$3,'admin')`, [org, section, path])
+    await query("insert into storage.objects(bucket_id,name) values ('document-assets',$1)", [path])
+    for (const role of VIEWER_ROLES) {
+      await query('update public.profiles set role=$1 where user_id=$2', [role, alice])
+      await asUser(alice)
+      assert.equal((await query('select id from public.section_documents')).length, 0)
+      assert.equal((await query("select id from storage.objects where name=$1", [path])).length, 0)
+      await db.exec('reset role')
+    }
+    await asUser(admin)
+    assert.equal((await query('select id from public.section_documents')).length, 1)
+    assert.equal((await query("select id from storage.objects where name=$1", [path])).length, 1)
+  })
+
+  await subtest('se pueden habilitar intentos para Administradores sin inventar asignaciones de contenido', async () => {
+    await asUser(admin)
+    await watch(first, admin)
+    for (let attempt = 0; attempt < 3; attempt += 1) await submit(first, false)
+    const result = (await query('select public.admin_grant_quiz_attempt($1,$2) as result', [first, admin]))[0].result
+    assert.equal(result.remainingAttempts, 1)
+    await rejects('select public.admin_grant_quiz_attempt($1,$2)', [first, outsider], /asignado/)
+  })
+
+  await subtest('los datos de ejemplo incluyen los cinco roles', async () => {
+    const seed = (await readFile(new URL('../supabase/seed.sql', import.meta.url), 'utf8')).replace(/^begin;\s*/, '').replace(/commit;\s*$/, '')
+    await db.exec(seed)
+    const assigned = await query("select distinct role::text from public.video_assignments where video_id::text like '30000000-%'")
+    assert.deepEqual(assigned.map((row) => row.role).sort(), [...USER_ROLES].sort())
+  })
+
+  await subtest('la actualización final se puede repetir conservando los permisos y requisitos existentes', async () => {
+    const before = await query("select video_id,role,section_id,visible,is_locked,prerequisite_video_id from public.video_assignments where role<>'admin' order by video_id,role")
+    const migration = (await readFile(new URL('../supabase/migrations/20261019222833_operational_roles_consistency.sql', import.meta.url), 'utf8')).replace(/^begin;\s*/, '').replace(/commit;\s*$/, '')
+    await db.exec(migration)
+    await db.exec(migration)
+    const after = await query("select video_id,role,section_id,visible,is_locked,prerequisite_video_id from public.video_assignments where role<>'admin' order by video_id,role")
+    assert.deepEqual(after, before)
+    assert.equal((await query("select video_id from public.video_assignments where role='admin'")).length, 4)
   })
 
   await subtest('vendedores y gerencia acceden solo a su contenido y organización', async () => {
@@ -252,10 +306,15 @@ test('secuencias e intentos en PostgreSQL', async (t) => {
     assignment.prerequisite_video_id = free
     const oldClientSnapshot = { ...snapshot, section_roles: snapshot.section_roles.filter((row) => ['operator', 'boss'].includes(row.role)) }
     await rejects('select public.save_admin_snapshot($1,$2)', [JSON.stringify(oldClientSnapshot), revision], /Section roles do not match/)
+    await rejects('select public.save_admin_snapshot($1,$2)', [JSON.stringify({ ...snapshot, section_roles: snapshot.section_roles.filter((row) => row.role !== 'admin') }), revision], /Section roles do not match/)
     for (const role of ['salesperson', 'management']) {
       snapshot.section_roles.find((row) => row.role === role).visible = true
       snapshot.video_assignments.push({ video_id: first, role, section_id: section, visible: true })
     }
+    const adminOnly = id(95)
+    snapshot.videos.push({ id: adminOnly, title: 'Solo Administración', active: true })
+    snapshot.video_sources.push({ video_id: adminOnly, provider: 'direct', source_ref: 'https://example.test/private.mp4', source_url: 'https://example.test/private.mp4' })
+    snapshot.video_assignments.push({ video_id: adminOnly, role: 'admin', section_id: section, visible: true })
     const next = Number((await query('select public.save_admin_snapshot($1,$2) as revision', [JSON.stringify(snapshot), revision]))[0].revision)
     assert.equal(next, revision + 1)
     assert.equal((await query("select role from public.video_assignments where video_id=$1 and role in ('salesperson','management')", [first])).length, 2)
@@ -264,6 +323,11 @@ test('secuencias e intentos en PostgreSQL', async (t) => {
     await rejects('select public.save_admin_snapshot($1,$2)', [JSON.stringify(snapshot), next], /ciclo/)
     assert.equal(Number((await query('select content_revision from public.organizations where id=$1', [org]))[0].content_revision), next)
     assert.equal((await query("select prerequisite_video_id from public.video_assignments where video_id=$1 and role='operator'", [free]))[0].prerequisite_video_id, null)
+    assert.equal(await playable(adminOnly), true)
+    await rejects("update public.video_assignments set is_locked=true where video_id=$1 and role='admin'", [adminOnly], /check constraint/)
+    await asUser(alice)
+    assert.equal(await playable(adminOnly), false)
+    assert.equal((await query('select id from public.videos where id=$1', [adminOnly])).length, 0)
   })
   await subtest('respuestas inválidas no consumen intentos y un aprobado no puede seguir enviando', async () => {
     await asUser(alice)

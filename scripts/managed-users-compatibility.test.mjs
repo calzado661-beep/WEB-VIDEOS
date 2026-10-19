@@ -10,7 +10,9 @@ test('la lista de usuarios funciona antes y después de instalar los nuevos role
   const server = await createServer({
     configFile: false,
     envDir: false,
-    server: { middlewareMode: true, hmr: false, watch: null },
+    cacheDir: 'node_modules/.vite-managed-users-test',
+    optimizeDeps: { noDiscovery: true, include: [] },
+    server: { middlewareMode: true, hmr: false, ws: false, watch: null },
     define: {
       'import.meta.env.VITE_SUPABASE_URL': JSON.stringify('https://compatibility-test.supabase.co'),
       'import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY': JSON.stringify('test-public-key'),

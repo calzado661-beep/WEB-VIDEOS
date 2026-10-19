@@ -7,6 +7,7 @@ import {
 } from './_shared/supabase-server.js'
 
 import { USER_ROLES as MANAGED_ROLES } from '../../src/data.js'
+import { getRoleAvailabilityError } from './_shared/role-availability.js'
 const MIN_PASSWORD_LENGTH = 8
 const MAX_PASSWORD_LENGTH = 128
 const MAX_DISPLAY_NAME_LENGTH = 80
@@ -86,6 +87,8 @@ export default async function updateUser(request) {
       if (!MANAGED_ROLES.includes(body.role)) {
         return jsonResponse({ error: 'Selecciona un rol de usuario válido.' }, 400)
       }
+      const unavailableRole = await getRoleAvailabilityError(serviceClient, accessContext.organizationId, body.role)
+      if (unavailableRole) return jsonResponse(unavailableRole.body, unavailableRole.status)
       updates.role = body.role
     }
 
