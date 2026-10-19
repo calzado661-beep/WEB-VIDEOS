@@ -1,6 +1,6 @@
 # Aurea Video Hub
 
-Portal privado de videos creado con React + Vite. Incluye tres accesos diferenciados: administrador, operante y jefe.
+Portal privado de videos creado con React + Vite. Incluye cinco roles: Administradores, Operarios, Jefes, Vendedores y Gerencia.
 
 ## Ejecutar en Git Bash
 
@@ -22,8 +22,8 @@ La aplicación lee y guarda videos, secciones, configuración y permisos únicam
 ## Funciones incluidas
 
 - Login con usuario y contraseña individuales por persona (Supabase Auth valida la contraseña).
-- Panel de administración para crear, editar y deshabilitar cuentas de operante y jefe.
-- Secciones distintas en el sidebar de operante y jefe.
+- Panel de administración para crear, editar y deshabilitar cuentas con cualquiera de los cinco roles. La cuenta del administrador conectado está protegida contra cambios desde este panel.
+- Secciones y permisos de contenido independientes para Operarios, Jefes, Vendedores y Gerencia.
 - Asignación de cada video a un rol y una sección específicos.
 - Reproducción integrada de YouTube, Google Drive, Vimeo, Loom y archivos directos MP4/WebM/Ogg.
 - Título, descripción, duración y opción de contenido destacado.
@@ -66,9 +66,11 @@ Sí. Esta versión usa Supabase como fuente de verdad para:
 - Autenticar usuario y contraseña, y crear la sesión.
 - Guardar secciones, videos y asignaciones.
 - Aplicar permisos RLS en la base de datos.
-- Impedir que operante o jefe descarguen registros no autorizados.
+- Impedir que los roles de contenido descarguen registros no autorizados.
 - Guardar videos privados o generar enlaces temporales cuando corresponda.
 
 Las migraciones versionadas están en [`supabase/migrations`](supabase/migrations), los datos iniciales en [`supabase/seed.sql`](supabase/seed.sql) y la guía de conexión segura en [`docs/SUPABASE.md`](docs/SUPABASE.md).
 
-Antes del primer login ejecuta `npm run provision:admin-user` con `ADMIN_USERNAME` y `ADMIN_PASSWORD` en variables temporales para crear la cuenta administradora; consulta la guía para el procedimiento completo y para crear las cuentas de operante y jefe desde el panel de administración.
+Antes del primer login ejecuta `npm run provision:admin-user` con `ADMIN_USERNAME` y `ADMIN_PASSWORD` en variables temporales para crear la primera cuenta administradora; las demás cuentas se pueden crear desde el panel de administración.
+
+La actualización a los cinco roles y el orden de sus migraciones se explican en [Roles y permisos](docs/ROLES.md).

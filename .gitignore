@@ -8,4 +8,5 @@ supabase/.temp/
 .DS_Store
 qa-output/
 outputs/nissei-users-20261006/
+outputs/activate-operational-roles.sql
 vite.*.log

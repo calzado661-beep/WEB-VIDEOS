@@ -49,3 +49,15 @@ test('el cupo adicional se consume sin reiniciar intentos; admite historiales an
   assert.equal(getQuizAttemptState({ maxAttempts: 3 }, { attemptsCount: 4, extraAttempts: 1 }).remaining, 0)
   assert.equal(getQuizAttemptState({ maxAttempts: 3 }, { attemptsCount: 10, extraAttempts: 8 }).remaining, 1)
 })
+
+test('valida requisitos y ciclos para vendedores y gerencia', () => {
+  for (const role of ['salesperson', 'management']) {
+    const newSections = [{ id: 's', roles: [role] }]
+    const first = { ...video('first'), assignments: { [role]: 's' }, watched: true, quizResult: { passed: true } }
+    const second = { ...video('second'), assignments: { [role]: 's' }, prerequisites: { [role]: 'first' } }
+    assert.equal(validateLearningSequence([first, second], newSections), '')
+    assert.equal(getLearningBlockReason(second, role, [first, second], newSections), '')
+    assert.match(validateLearningSequence([{ ...first, prerequisites: { [role]: 'second' } }, second], newSections), /ciclo/)
+    assert.match(validateLearningSequence([{ ...second, prerequisites: { [role]: 'missing' } }], newSections), /previo/)
+  }
+})

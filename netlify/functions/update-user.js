@@ -6,7 +6,7 @@ import {
   ServerConfigurationError,
 } from './_shared/supabase-server.js'
 
-const MANAGED_ROLES = ['operator', 'boss']
+import { USER_ROLES as MANAGED_ROLES } from '../../src/data.js'
 const MIN_PASSWORD_LENGTH = 8
 const MAX_PASSWORD_LENGTH = 128
 const MAX_DISPLAY_NAME_LENGTH = 80
@@ -84,7 +84,7 @@ export default async function updateUser(request) {
 
     if (body.role !== undefined) {
       if (!MANAGED_ROLES.includes(body.role)) {
-        return jsonResponse({ error: 'El rol debe ser operante o jefe.' }, 400)
+        return jsonResponse({ error: 'Selecciona un rol de usuario válido.' }, 400)
       }
       updates.role = body.role
     }

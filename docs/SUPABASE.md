@@ -106,7 +106,7 @@ En PowerShell, establece esas variables con `$env:NOMBRE='valor'` y luego ejecut
 
 El correo interno se genera con un valor no entregable (`video-hub-admin@accounts.invalid` por defecto; personalízalo con `ADMIN_AUTH_EMAIL`). No guardes la contraseña en Git ni la configures como variable `VITE_*`; elimínala del entorno después del aprovisionamiento.
 
-Las cuentas de **operante** y **jefe** ya no se aprovisionan por script: una vez que el administrador inicia sesión, se crean, editan y deshabilitan desde el panel **Usuarios**.
+Después de aprovisionar la primera cuenta administradora, las cuentas con los cinco roles (**Administradores**, **Operarios**, **Jefes**, **Vendedores** y **Gerencia**) se crean, editan y deshabilitan desde el panel **Usuarios**. Consulta [Roles y permisos](ROLES.md) para las migraciones y la configuración de acceso.
 
 ## Reglas mínimas
 

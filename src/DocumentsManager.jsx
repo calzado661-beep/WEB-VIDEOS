@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { ROLE_META, VIEWER_ROLES } from './data.js'
 import { Check, FileText, Pencil, ShieldCheck, Trash2, UploadCloud, X } from 'lucide-react'
 import {
   deleteSectionDocument,
@@ -8,7 +9,7 @@ import {
 } from './lib/videoHubApi'
 
 const errorMessage = (error, fallback) => error instanceof Error && error.message ? error.message : fallback
-const AUDIENCE_LABELS = { operator: 'Operante', boss: 'Jefe', both: 'Ambos' }
+const AUDIENCE_LABELS = { ...Object.fromEntries(VIEWER_ROLES.map((role) => [role, ROLE_META[role].label])), both: 'Todos los roles de la sección' }
 
 function formatFileSize(bytes) {
   if (!Number.isFinite(bytes) || bytes <= 0) return '—'
@@ -125,7 +126,7 @@ export default function DocumentsManager({ data, setData, onNotify, sectionId = 
           <form className="document-upload-form" onSubmit={submitDocument}>
             <div className="form-group"><label>Título visible</label><input value={draft.title} onChange={(event) => setDraft({ ...draft, title: event.target.value })} maxLength="180" placeholder="Ej. Manual de seguridad" /></div>
             {!sectionId && <div className="form-group"><label>Sección</label><select value={draft.sectionId} onChange={(event) => setDraft({ ...draft, sectionId: event.target.value })}>{documentSections.map((section) => <option value={section.id} key={section.id}>{section.name}</option>)}</select></div>}
-            <div className="form-group"><label htmlFor="document-audience">Visible para</label><select id="document-audience" value={draft.audience} onChange={(event) => setDraft({ ...draft, audience: event.target.value })}><option value="both">Ambos</option><option value="operator">Operante</option><option value="boss">Jefe</option></select></div>
+            <div className="form-group"><label htmlFor="document-audience">Visible para</label><select id="document-audience" value={draft.audience} onChange={(event) => setDraft({ ...draft, audience: event.target.value })}><option value="both">Todos los roles de la sección</option>{VIEWER_ROLES.map((role) => <option value={role} key={role}>{ROLE_META[role].label}</option>)}</select></div>
             <div className="form-group document-file-field"><label>Archivo</label><input key={fileInputKey} type="file" accept=".pdf,.doc,.docx,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document" onChange={(event) => setDraft({ ...draft, file: event.target.files?.[0] || null })} /></div>
             <button className="primary-button" type="submit" disabled={!uploadsEnabled || uploading || !draft.title.trim() || !(sectionId || draft.sectionId) || !draft.file}>{uploading ? null : <UploadCloud size={17} />}{uploading ? 'Subiendo…' : uploadsEnabled ? 'Guardar documento' : 'Esperando guardado…'}</button>
           </form>
@@ -145,7 +146,7 @@ export default function DocumentsManager({ data, setData, onNotify, sectionId = 
                   <small>{section?.name || 'Sección'} · {formatFileSize(document.fileSize)}</small>
                   {editingId === document.id ? <div className="document-title-edit"><input value={editingTitle} maxLength="180" onChange={(event) => setEditingTitle(event.target.value)} autoFocus /><button type="button" onClick={() => saveTitle(document)} disabled={busyId === document.id}><Check size={15} /></button><button type="button" onClick={() => setEditingId(null)}><X size={15} /></button></div> : <h3>{document.title}</h3>}
                   <p>{document.fileName}</p>
-                  <label className="document-audience-control">Visible para <select value={document.audience || 'both'} onChange={(event) => changeAudience(document, event.target.value)} disabled={Boolean(busyId)} aria-label={'Visibilidad de ' + document.title}><option value="both">Ambos</option><option value="operator">Operante</option><option value="boss">Jefe</option></select></label>
+                  <label className="document-audience-control">Visible para <select value={document.audience || 'both'} onChange={(event) => changeAudience(document, event.target.value)} disabled={Boolean(busyId)} aria-label={'Visibilidad de ' + document.title}><option value="both">Todos los roles de la sección</option>{VIEWER_ROLES.map((role) => <option value={role} key={role}>{ROLE_META[role].label}</option>)}</select></label>
                 </div>
                 <div className="document-admin-card__actions"><button type="button" onClick={() => { setEditingId(document.id); setEditingTitle(document.title) }} disabled={Boolean(busyId)}><Pencil size={15} /> Editar título</button><button type="button" className="danger" onClick={() => removeDocument(document)} disabled={Boolean(busyId)}><Trash2 size={15} /> Eliminar</button></div>
               </article>

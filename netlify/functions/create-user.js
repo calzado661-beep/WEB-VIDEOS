@@ -6,7 +6,7 @@ import {
   ServerConfigurationError,
 } from './_shared/supabase-server.js'
 
-const MANAGED_ROLES = ['operator', 'boss']
+import { USER_ROLES as MANAGED_ROLES } from '../../src/data.js'
 const USERNAME_PATTERN = /^[a-z0-9._-]{3,32}$/
 const MIN_PASSWORD_LENGTH = 8
 const MAX_PASSWORD_LENGTH = 128
@@ -68,7 +68,7 @@ export default async function createUser(request) {
       return jsonResponse({ error: `La contraseña debe tener entre ${MIN_PASSWORD_LENGTH} y ${MAX_PASSWORD_LENGTH} caracteres.` }, 400)
     }
     if (!MANAGED_ROLES.includes(role)) {
-      return jsonResponse({ error: 'El rol debe ser operante o jefe.' }, 400)
+      return jsonResponse({ error: 'Selecciona un rol de usuario válido.' }, 400)
     }
     if (!displayName) {
       return jsonResponse({ error: 'Escribe un nombre para el usuario.' }, 400)

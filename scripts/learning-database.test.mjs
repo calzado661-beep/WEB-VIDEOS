@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 import test from 'node:test'
 import { PGlite } from '@electric-sql/pglite'
+import { USER_ROLES, VIEWER_ROLES } from '../src/data.js'
 
 // Real PostgreSQL execution, with only the external Supabase Auth/Storage
 // surfaces stubbed. Application functions, triggers, permissions and RLS are
@@ -36,6 +37,8 @@ test('secuencias e intentos en PostgreSQL', async (t) => {
     '20260909193654_section_documents.sql', '20261002000000_mixed_section_files.sql',
     '20261004000000_document_audience.sql', '20261004010000_video_learning_paths.sql',
     '20261006120229_guest_quiz_photo_preference.sql',
+    '20261019202553_operational_role_values.sql',
+    '20261019202600_operational_role_permissions.sql',
   ]
   for (const name of migrations) {
     const sql = (await readFile(new URL('../supabase/migrations/' + name, import.meta.url), 'utf8'))
@@ -83,6 +86,52 @@ test('secuencias e intentos en PostgreSQL', async (t) => {
   const subtest = async (name, fn) => t.test(name, async () => {
     await db.exec('begin')
     try { await fn() } finally { await db.exec('rollback; reset role') }
+  })
+
+  await subtest('los cinco roles coinciden con el catálogo y los nuevos no heredan acceso', async () => {
+    const roles = await query("select unnest(enum_range(null::public.app_role))::text as role")
+    assert.deepEqual(roles.map((row) => row.role), USER_ROLES)
+    const sectionRoles = await query('select role::text,visible from public.section_roles where section_id=$1 order by role', [section])
+    assert.equal(sectionRoles.length, VIEWER_ROLES.length)
+    assert.ok(sectionRoles.filter((row) => ['salesperson', 'management'].includes(row.role)).every((row) => !row.visible))
+    await rejects('insert into public.section_roles(section_id,organization_id,role) values ($1,$2,\'admin\')', [section, org], /check constraint/)
+  })
+
+  await subtest('vendedores y gerencia acceden solo a su contenido y organización', async () => {
+    const seller = id(91), manager = id(92), externalSeller = id(93)
+    for (const [user, role, organization] of [[seller, 'salesperson', org], [manager, 'management', org], [externalSeller, 'salesperson', id(8)]]) {
+      await query('insert into auth.users(id) values ($1)', [user])
+      await query('insert into public.profiles(user_id,organization_id,role) values ($1,$2,$3)', [user, organization, role])
+    }
+    await asUser(seller)
+    assert.equal((await query('select public.get_my_access_context() as context'))[0].context.role, 'salesperson')
+    assert.equal((await query('select id from public.videos')).length, 0)
+    await asUser(admin)
+    await query("update public.section_roles set visible=true where section_id=$1 and role in ('salesperson','management')", [section])
+    for (const role of ['salesperson', 'management']) {
+      await query('insert into public.video_assignments(video_id,organization_id,role,section_id) values ($1,$2,$3,$4)', [first, org, role, section])
+    }
+    await query("insert into public.video_assignments(video_id,organization_id,role,section_id,prerequisite_video_id) values ($1,$2,'salesperson',$3,$4)", [second, org, section, first])
+    for (const [index, audience] of ['salesperson', 'management', 'both'].entries()) {
+      await query(`insert into public.section_documents(organization_id,section_id,title,file_name,mime_type,file_size,storage_object_path,audience)
+        values ($1,$2,$3,'test.pdf','application/pdf',10,$4,$3)`, [org, section, audience, `${org}/${section}/test-${index}.pdf`])
+    }
+    await asUser(seller)
+    assert.deepEqual((await query('select id from public.videos order by id')).map((row) => row.id), [first, second])
+    assert.equal(await playable(first), true)
+    assert.equal(await playable(second), false)
+    assert.deepEqual((await query('select audience from public.section_documents order by audience')).map((row) => row.audience), ['both', 'salesperson'])
+    await rejects('select public.save_admin_snapshot($1,0)', ['{}'], /Administrator access required/)
+    await watch(first, seller)
+    assert.equal((await submit(first)).passed, true)
+    assert.equal(await playable(second), true)
+    await asUser(manager)
+    assert.deepEqual((await query('select id from public.videos')).map((row) => row.id), [first])
+    assert.deepEqual((await query('select audience from public.section_documents order by audience')).map((row) => row.audience), ['both', 'management'])
+    assert.equal((await query('select user_id from public.video_watch_progress')).length, 0)
+    await asUser(externalSeller)
+    assert.equal((await query('select id from public.videos')).length, 0)
+    assert.equal((await query('select id from public.section_documents')).length, 0)
   })
 
   await subtest('la foto del cuestionario se puede configurar para un usuario', async () => {
@@ -201,8 +250,15 @@ test('secuencias e intentos en PostgreSQL', async (t) => {
     const revision = Number((await query('select content_revision from public.organizations where id=$1', [org]))[0].content_revision)
     const assignment = snapshot.video_assignments.find((row) => row.video_id === second && row.role === 'operator')
     assignment.prerequisite_video_id = free
+    const oldClientSnapshot = { ...snapshot, section_roles: snapshot.section_roles.filter((row) => ['operator', 'boss'].includes(row.role)) }
+    await rejects('select public.save_admin_snapshot($1,$2)', [JSON.stringify(oldClientSnapshot), revision], /Section roles do not match/)
+    for (const role of ['salesperson', 'management']) {
+      snapshot.section_roles.find((row) => row.role === role).visible = true
+      snapshot.video_assignments.push({ video_id: first, role, section_id: section, visible: true })
+    }
     const next = Number((await query('select public.save_admin_snapshot($1,$2) as revision', [JSON.stringify(snapshot), revision]))[0].revision)
     assert.equal(next, revision + 1)
+    assert.equal((await query("select role from public.video_assignments where video_id=$1 and role in ('salesperson','management')", [first])).length, 2)
     assert.equal((await query("select prerequisite_video_id from public.video_assignments where video_id=$1 and role='operator'", [second]))[0].prerequisite_video_id, free)
     snapshot.video_assignments.find((row) => row.video_id === free && row.role === 'operator').prerequisite_video_id = second
     await rejects('select public.save_admin_snapshot($1,$2)', [JSON.stringify(snapshot), next], /ciclo/)

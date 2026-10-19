@@ -50,7 +50,7 @@ import {
   Video,
   X,
 } from 'lucide-react'
-import { ROLE_META } from './data'
+import { ROLE_META, USER_ROLES, VIEWER_ROLES } from './data'
 import {
   createUser,
   deleteVideoQuiz,
@@ -122,12 +122,9 @@ const SECTION_ICON_OPTIONS = [
   { value: 'lightbulb', label: 'Ideas' },
 ]
 
-const VIEWER_ROLES = ['operator', 'boss']
-
 const AUDIENCE_META = {
-  operator: { label: 'Operante', groupLabel: 'Operante', description: 'Videos exclusivos para el rol Operante' },
-  boss: { label: 'Jefe', groupLabel: 'Jefe', description: 'Videos exclusivos para el rol Jefe' },
-  both: { label: 'Ambos', groupLabel: 'Todos', description: 'Videos destinados a Operante y Jefe' },
+  ...Object.fromEntries(VIEWER_ROLES.map((role) => [role, { label: ROLE_META[role].label, groupLabel: ROLE_META[role].label, description: `Videos exclusivos para ${ROLE_META[role].label}` }])),
+  both: { label: 'Varios roles', groupLabel: 'Varios roles', description: 'Videos compartidos entre dos o más roles' },
   none: { label: 'Sin asignar', groupLabel: 'Sin asignar', description: 'Videos que necesitan una audiencia y una sección' },
 }
 
@@ -135,12 +132,8 @@ const isVideoAssignedTo = (video, role) => Boolean(video.assignments?.[role])
 const isVideoLockedFor = (video, role) => isVideoAssignedTo(video, role) && Boolean(video.locked?.[role] || video.learningLocked?.[role])
 
 function getVideoAudience(video) {
-  const forOperator = isVideoAssignedTo(video, 'operator')
-  const forBoss = isVideoAssignedTo(video, 'boss')
-  if (forOperator && forBoss) return 'both'
-  if (forOperator) return 'operator'
-  if (forBoss) return 'boss'
-  return 'none'
+  const roles = VIEWER_ROLES.filter((role) => isVideoAssignedTo(video, role))
+  return roles.length > 1 ? 'both' : roles[0] || 'none'
 }
 
 function getPersistedVideoSource(video) {
@@ -1020,7 +1013,7 @@ function AdminApp({
     videos: ['Biblioteca de videos', 'Publica contenido y decide quién puede verlo.'],
     documents: ['Biblioteca de documentos', 'Sube y administra archivos PDF o Word por sección.'],
     settings: ['Configuración general', 'Personaliza los textos y preferencias de la plataforma.'],
-    users: ['Usuarios', 'Crea, edita y deshabilita las cuentas de operante y jefe.'],
+    users: ['Usuarios', 'Crea, edita y deshabilita cuentas con los cinco roles disponibles.'],
     progress: ['Progreso de usuarios', 'Qué tanto ha avanzado cada persona en su contenido asignado.'],
     preview: ['Vista por rol', 'Comprueba la experiencia antes de compartirla.'],
   }
@@ -1138,7 +1131,7 @@ function SettingsManager({ data, setData }) {
           <div className="form-group"><label>Nombre de la organización</label><input value={data.organization || ''} onChange={(event) => setData((current) => ({ ...current, organization: event.target.value }))} maxLength="120" /></div>
           <div className="form-group"><label>Nombre del portal</label><input value={settings.productName} onChange={(event) => updateSetting('productName', event.target.value)} maxLength="80" /></div>
           <div className="form-group general-settings-form__wide"><label>Título de bienvenida</label><input value={settings.welcomeTitle} onChange={(event) => updateSetting('welcomeTitle', event.target.value)} maxLength="180" /></div>
-          <div className="form-group general-settings-form__wide"><label>Mensaje de bienvenida</label><textarea value={settings.welcomeMessage} onChange={(event) => updateSetting('welcomeMessage', event.target.value)} rows="4" placeholder="Escribe el mensaje que verán Operante y Jefe." /></div>
+          <div className="form-group general-settings-form__wide"><label>Mensaje de bienvenida</label><textarea value={settings.welcomeMessage} onChange={(event) => updateSetting('welcomeMessage', event.target.value)} rows="4" placeholder="Escribe el mensaje que verán los usuarios." /></div>
           <div className="form-group general-settings-form__wide"><label>Mensaje de ayuda</label><input value={settings.supportMessage} onChange={(event) => updateSetting('supportMessage', event.target.value)} placeholder="Ej. Escribe al administrador" /></div>
           <label className="feature-check general-settings-form__wide"><input type="checkbox" checked={settings.allowLightMode !== false} onChange={(event) => updateSetting('allowLightMode', event.target.checked)} /><span><Sun size={16} /></span><div><strong>Permitir modo claro</strong><small>Los usuarios podrán alternar entre el tema oscuro y claro.</small></div></label>
           <label className="feature-check general-settings-form__wide"><input type="checkbox" checked={Boolean(settings.requireQuizPhoto)} onChange={(event) => updateSetting('requireQuizPhoto', event.target.checked)} /><span><Camera size={16} /></span><div><strong>Solicitar foto al iniciar el cuestionario</strong><small>Antes de responder, cada usuario deberá tomarse una foto con su cámara. Se guarda junto al intento para que el administrador la revise.</small></div></label>
@@ -1151,17 +1144,17 @@ function SettingsManager({ data, setData }) {
 
 function AdminOverview({ data, onNavigate }) {
   const visibleSectionIds = (role) => new Set(data.sections.filter((section) => section.roles.includes(role)).map((section) => section.id))
-  const operatorSections = visibleSectionIds('operator')
-  const bossSections = visibleSectionIds('boss')
-  const operatorVideos = data.videos.filter((video) => operatorSections.has(video.assignments.operator)).length
-  const bossVideos = data.videos.filter((video) => bossSections.has(video.assignments.boss)).length
-  const operatorBlocked = data.videos.filter((video) => operatorSections.has(video.assignments.operator) && isVideoLockedFor(video, 'operator')).length
-  const bossBlocked = data.videos.filter((video) => bossSections.has(video.assignments.boss) && isVideoLockedFor(video, 'boss')).length
+  const roleStats = VIEWER_ROLES.map((role) => {
+    const sectionIds = visibleSectionIds(role)
+    const videos = data.videos.filter((video) => sectionIds.has(video.assignments[role]))
+    const blocked = videos.filter((video) => isVideoLockedFor(video, role)).length
+    return { role, total: videos.length, blocked }
+  })
   const stats = [
     { label: 'Videos publicados', value: data.videos.length, note: 'en la biblioteca', icon: Play, tone: 'red' },
-    { label: 'Secciones activas', value: data.sections.length, note: 'entre ambos roles', icon: Layers3, tone: 'blue' },
-    { label: 'Para operante', value: operatorVideos, note: `${operatorVideos - operatorBlocked} disponibles · ${operatorBlocked} bloqueados`, icon: UsersRound, tone: 'green' },
-    { label: 'Para jefe', value: bossVideos, note: `${bossVideos - bossBlocked} disponibles · ${bossBlocked} bloqueados`, icon: BriefcaseBusiness, tone: 'violet' },
+    { label: 'Secciones activas', value: data.sections.length, note: 'entre todos los roles', icon: Layers3, tone: 'blue' },
+    { label: 'Roles de usuarios', value: USER_ROLES.length, note: 'Administradores y cuatro roles de contenido', icon: UsersRound, tone: 'green' },
+    { label: 'Asignaciones por rol', value: roleStats.reduce((sum, item) => sum + item.total, 0), note: 'videos con una sección visible', icon: BriefcaseBusiness, tone: 'violet' },
   ]
 
   return (
@@ -1194,15 +1187,14 @@ function AdminOverview({ data, onNavigate }) {
           <div className="panel-heading"><div><h2>Acciones rápidas</h2><p>Configura tu plataforma</p></div></div>
           <button onClick={() => onNavigate('videos')}><span className="quick-icon"><Plus size={18} /></span><div><strong>Agregar video</strong><small>YouTube, Drive, Vimeo o MP4</small></div><ChevronRight size={17} /></button>
           <button onClick={() => onNavigate('sections')}><span className="quick-icon"><FolderCog size={18} /></span><div><strong>Crear sección</strong><small>Ordena el contenido por tema</small></div><ChevronRight size={17} /></button>
-          <button onClick={() => onNavigate('preview')}><span className="quick-icon"><Eye size={18} /></span><div><strong>Revisar permisos</strong><small>Vista de operante y jefe</small></div><ChevronRight size={17} /></button>
+          <button onClick={() => onNavigate('preview')}><span className="quick-icon"><Eye size={18} /></span><div><strong>Revisar permisos</strong><small>Vista por rol</small></div><ChevronRight size={17} /></button>
         </aside>
       </div>
 
       <section className="access-summary">
         <div className="access-summary__copy"><span className="access-summary__icon"><ShieldCheck size={22} /></span><div><h2>Acceso diferenciado por rol</h2><p>Cada usuario solo accede a las secciones y videos que tú autorizas.</p></div></div>
         <div className="access-bars">
-          <div><span><b>Operante</b><small>{operatorVideos} de {data.videos.length} videos</small></span><i><em style={{ width: `${data.videos.length ? (operatorVideos / data.videos.length) * 100 : 0}%` }} /></i></div>
-          <div><span><b>Jefe</b><small>{bossVideos} de {data.videos.length} videos</small></span><i><em style={{ width: `${data.videos.length ? (bossVideos / data.videos.length) * 100 : 0}%` }} /></i></div>
+          {roleStats.map(({ role, total }) => <div key={role}><span><b>{ROLE_META[role].label}</b><small>{total} de {data.videos.length} videos</small></span><i><em style={{ width: `${data.videos.length ? (total / data.videos.length) * 100 : 0}%` }} /></i></div>)}
         </div>
       </section>
     </div>
@@ -1278,7 +1270,7 @@ function SectionsManager({ data, setData, saveState, onRemove, onNotify, onManag
     <div className="manager-stack">
       <section className="panel manager-panel">
         <div className="manager-toolbar">
-          <div><h2>Menú de navegación</h2><p>Activa cada sección para operante, jefe o ambos.</p></div>
+          <div><h2>Menú de navegación</h2><p>Activa cada sección para los roles que correspondan.</p></div>
           <button className="primary-button" onClick={() => setAdding((value) => !value)}>{adding ? <X size={17} /> : <Plus size={17} />} {adding ? 'Cancelar' : 'Nueva sección'}</button>
         </div>
 
@@ -1286,7 +1278,7 @@ function SectionsManager({ data, setData, saveState, onRemove, onNotify, onManag
           <form className="inline-form" onSubmit={addSection}>
             <div className="form-group grow"><label>Nombre de la sección</label><input value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} placeholder="Ej. Recursos humanos" autoFocus /></div>
             <div className="form-group"><label>Icono</label><select value={draft.icon} onChange={(event) => setDraft({ ...draft, icon: event.target.value })}>{SECTION_ICON_OPTIONS.map((icon) => <option value={icon.value} key={icon.value}>{icon.label}</option>)}</select></div>
-            <div className="form-group"><label>Visible para</label><div className="role-checks">{['operator', 'boss'].map((role) => <button type="button" className={draft.roles.includes(role) ? 'selected' : ''} key={role} onClick={() => setDraft({ ...draft, roles: draft.roles.includes(role) ? draft.roles.filter((item) => item !== role) : [...draft.roles, role] })}><Check size={13} /> {ROLE_META[role].label}</button>)}</div></div>
+            <div className="form-group"><label>Visible para</label><div className="role-checks">{VIEWER_ROLES.map((role) => <button type="button" className={draft.roles.includes(role) ? 'selected' : ''} key={role} onClick={() => setDraft({ ...draft, roles: draft.roles.includes(role) ? draft.roles.filter((item) => item !== role) : [...draft.roles, role] })}><Check size={13} /> {ROLE_META[role].label}</button>)}</div></div>
             <button className="primary-button form-submit" type="submit" disabled={!draft.name.trim() || !draft.roles.length}>Crear</button>
           </form>
         )}
@@ -1300,7 +1292,7 @@ function SectionsManager({ data, setData, saveState, onRemove, onNotify, onManag
             return (
               <div className="section-row" key={section.id}>
                 <div className="section-identity"><span className="section-icon"><Icon size={18} /></span>{editingId === section.id ? <div className="inline-edit"><input value={editingName} onChange={(event) => setEditingName(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') saveName(section.id) }} autoFocus /><button onClick={() => saveName(section.id)}><Check size={15} /></button></div> : <div><strong>{section.name}</strong><small>/{section.id.split('-').slice(0, -1).join('-') || section.id}</small></div>}</div>
-                <div className="role-toggles">{['operator', 'boss'].map((role) => <button className={section.roles.includes(role) ? 'on' : ''} onClick={() => toggleRole(section.id, role)} key={role}><span>{section.roles.includes(role) && <Check size={11} />}</span>{ROLE_META[role].label}</button>)}</div>
+                <div className="role-toggles">{VIEWER_ROLES.map((role) => <button className={section.roles.includes(role) ? 'on' : ''} onClick={() => toggleRole(section.id, role)} key={role}><span>{section.roles.includes(role) && <Check size={11} />}</span>{ROLE_META[role].label}</button>)}</div>
                 <button type="button" className="section-files-button" onClick={() => { setOpenSectionId(section.id); setActiveTab('videos') }} aria-label={`Ver videos y documentos de ${section.name}`} title="Ver videos y documentos"><Eye size={17} /><span>{count} videos · {documentCount} docs</span></button>
                 <div className="order-buttons"><button disabled={index === 0} onClick={() => move(section.id, -1)}><ChevronLeft size={16} /></button><button disabled={index === sortedSections.length - 1} onClick={() => move(section.id, 1)}><ChevronRight size={16} /></button></div>
                 <div className="row-actions"><button onClick={() => { setEditingId(section.id); setEditingName(section.name) }}><Pencil size={16} /></button><button className="danger" onClick={() => onRemove(section.id)}><Trash2 size={16} /></button></div>
@@ -1335,14 +1327,10 @@ const emptyVideoDraft = {
   thumbnailUrl: '',
   duration: '',
   featured: false,
-  operatorEnabled: true,
-  operatorSection: '',
-  operatorLocked: false,
-  operatorPrerequisite: '',
-  bossEnabled: false,
-  bossSection: '',
-  bossLocked: false,
-  bossPrerequisite: '',
+  ...Object.fromEntries(VIEWER_ROLES.flatMap((role) => [
+    [`${role}Enabled`, role === 'operator'], [`${role}Section`, ''],
+    [`${role}Locked`, false], [`${role}Prerequisite`, ''],
+  ])),
 }
 
 function VideosManager({ data, setData, saveState, persistedVideoIdsRef, onNotify, initialSectionId = null }) {
@@ -1366,10 +1354,10 @@ function VideosManager({ data, setData, saveState, persistedVideoIdsRef, onNotif
     setError('')
     setDraft({
       ...emptyVideoDraft,
-      operatorEnabled: selectedSection ? selectedSection.roles.includes('operator') : true,
-      operatorSection: selectedSection?.roles.includes('operator') ? selectedSection.id : sectionsFor('operator')[0]?.id || '',
-      bossEnabled: selectedSection ? selectedSection.roles.includes('boss') : false,
-      bossSection: selectedSection?.roles.includes('boss') ? selectedSection.id : sectionsFor('boss')[0]?.id || '',
+      ...Object.fromEntries(VIEWER_ROLES.flatMap((role) => [
+        [`${role}Enabled`, selectedSection ? selectedSection.roles.includes(role) : role === 'operator'],
+        [`${role}Section`, selectedSection?.roles.includes(role) ? selectedSection.id : sectionsFor(role)[0]?.id || ''],
+      ])),
     })
     setFormOpen(true)
   }
@@ -1389,14 +1377,12 @@ function VideosManager({ data, setData, saveState, persistedVideoIdsRef, onNotif
       thumbnailUrl: video.thumbnailUrl || '',
       duration: video.duration || '',
       featured: Boolean(video.featured),
-      operatorEnabled: Boolean(video.assignments.operator),
-      operatorSection: video.assignments.operator || sectionsFor('operator')[0]?.id || '',
-      operatorLocked: Boolean(video.locked?.operator),
-      operatorPrerequisite: video.prerequisites?.operator || '',
-      bossEnabled: Boolean(video.assignments.boss),
-      bossSection: video.assignments.boss || sectionsFor('boss')[0]?.id || '',
-      bossLocked: Boolean(video.locked?.boss),
-      bossPrerequisite: video.prerequisites?.boss || '',
+      ...Object.fromEntries(VIEWER_ROLES.flatMap((role) => [
+        [`${role}Enabled`, Boolean(video.assignments[role])],
+        [`${role}Section`, video.assignments[role] || sectionsFor(role)[0]?.id || ''],
+        [`${role}Locked`, Boolean(video.locked?.[role])],
+        [`${role}Prerequisite`, video.prerequisites?.[role] || ''],
+      ])),
     })
     setFormOpen(true)
     window.scrollTo({ top: 0, behavior: 'smooth' })
@@ -1416,19 +1402,19 @@ function VideosManager({ data, setData, saveState, persistedVideoIdsRef, onNotif
       setError('Completa el título, la descripción y un enlace de video válido.')
       return
     }
-    if ((!draft.operatorEnabled || !draft.operatorSection) && (!draft.bossEnabled || !draft.bossSection)) {
+    if (!VIEWER_ROLES.some((role) => draft[`${role}Enabled`] && draft[`${role}Section`])) {
       setError('Asigna el video al menos a un rol y una sección.')
       return
     }
     const assignments = {}
-    if (draft.operatorEnabled && draft.operatorSection) assignments.operator = draft.operatorSection
-    if (draft.bossEnabled && draft.bossSection) assignments.boss = draft.bossSection
     const locked = {}
-    if (draft.operatorEnabled && draft.operatorSection) locked.operator = draft.operatorLocked
-    if (draft.bossEnabled && draft.bossSection) locked.boss = draft.bossLocked
     const prerequisites = {}
-    if (assignments.operator && draft.operatorPrerequisite) prerequisites.operator = draft.operatorPrerequisite
-    if (assignments.boss && draft.bossPrerequisite) prerequisites.boss = draft.bossPrerequisite
+    for (const role of VIEWER_ROLES) {
+      if (!draft[`${role}Enabled`] || !draft[`${role}Section`]) continue
+      assignments[role] = draft[`${role}Section`]
+      locked[role] = Boolean(draft[`${role}Locked`])
+      if (draft[`${role}Prerequisite`]) prerequisites[role] = draft[`${role}Prerequisite`]
+    }
     const payload = {
       title: draft.title.trim(),
       description: draft.description.trim(),
@@ -1503,14 +1489,14 @@ function VideosManager({ data, setData, saveState, persistedVideoIdsRef, onNotif
   }
   const source = getVideoSource(draft.url)
   const filtered = data.videos.filter((video) => video.title.toLowerCase().includes(query.toLowerCase()))
-  const groupOrder = ['operator', 'boss', 'both']
+  const groupOrder = [...VIEWER_ROLES, 'both']
   if (filtered.some((video) => getVideoAudience(video) === 'none')) groupOrder.push('none')
   const libraryGroups = groupOrder.map((audience) => ({
     id: audience,
     ...AUDIENCE_META[audience],
     videos: filtered.filter((video) => getVideoAudience(video) === audience),
   }))
-  const visibleLibraryGroups = query.trim() ? libraryGroups.filter((group) => group.videos.length) : libraryGroups
+  const visibleLibraryGroups = libraryGroups.filter((group) => group.videos.length)
 
   return (
     <div className="manager-stack">
@@ -1530,11 +1516,11 @@ function VideosManager({ data, setData, saveState, persistedVideoIdsRef, onNotif
             </div>
             <div className="assignment-box">
               <div><h3>Permisos y ubicación</h3><p>Elige exactamente quién lo verá y dónde aparecerá.</p></div>
-              {['operator', 'boss'].map((role) => {
-                const enabledKey = role === 'operator' ? 'operatorEnabled' : 'bossEnabled'
-                const sectionKey = role === 'operator' ? 'operatorSection' : 'bossSection'
-                const lockedKey = role === 'operator' ? 'operatorLocked' : 'bossLocked'
-                const prerequisiteKey = role === 'operator' ? 'operatorPrerequisite' : 'bossPrerequisite'
+              {VIEWER_ROLES.map((role) => {
+                const enabledKey = `${role}Enabled`
+                const sectionKey = `${role}Section`
+                const lockedKey = `${role}Locked`
+                const prerequisiteKey = `${role}Prerequisite`
                 const previousVideos = data.videos.filter((video) => {
                   const source = getPersistedVideoSource(video)
                   return video.id !== editingId && video.assignments?.[role] && video.quiz && (source.type === 'video' || ['youtube', 'vimeo'].includes(source.provider))
@@ -1580,7 +1566,7 @@ function VideosManager({ data, setData, saveState, persistedVideoIdsRef, onNotif
               {group.videos.length ? <div className="video-admin-grid video-admin-grid--group">{group.videos.map((video) => <AdminVideoCard video={video} data={data} onEdit={() => openEdit(video)} onDelete={() => deleteVideo(video.id)} key={video.id} />)}</div> : <div className="video-role-group__empty"><Film size={17} /><span>Aún no hay videos en este grupo.</span></div>}
             </section>
           ))}
-          {!filtered.length && query && <EmptyState icon={Search} title="No encontramos videos" text="Prueba con otra búsqueda." />}
+          {!filtered.length && <EmptyState icon={query ? Search : Film} title={query ? 'No encontramos videos' : 'Aún no hay videos'} text={query ? 'Prueba con otra búsqueda.' : 'Agrega un video y elige los roles que podrán verlo.'} />}
         </div>
       </section>
     </div>
@@ -1821,7 +1807,7 @@ function UsersManager({ onCreateUser, onUpdateUser, onNotify }) {
     setLoading(true)
     setLoadError('')
     try {
-      setUsers(await listManagedUsers())
+      setUsers(await listManagedUsers({ includeAdmins: true }))
     } catch (fetchError) {
       setLoadError(getErrorMessage(fetchError, 'No se pudieron cargar los usuarios.'))
     } finally {
@@ -1930,7 +1916,7 @@ function UsersManager({ onCreateUser, onUpdateUser, onNotify }) {
     <div className="access-layout">
       <section className="panel access-panel manager-panel">
         <div className="manager-toolbar">
-          <div><h2>Usuarios operante y jefe</h2><p>Crea cuentas individuales y controla su acceso.</p></div>
+          <div><h2>Usuarios y roles</h2><p>Crea cuentas individuales y controla su acceso.</p></div>
           <button className="primary-button" onClick={() => (formOpen ? closeForm() : openCreate())}>{formOpen ? <X size={17} /> : <Plus size={17} />} {formOpen ? 'Cancelar' : 'Nuevo usuario'}</button>
         </div>
 
@@ -1942,7 +1928,7 @@ function UsersManager({ onCreateUser, onUpdateUser, onNotify }) {
             <div className="modal-panel__body user-edit-modal__fields">
             <div className="form-group"><label>Usuario</label><input value={draft.username} onChange={(event) => setDraft({ ...draft, username: event.target.value })} placeholder="ej. jperez" disabled={!!editingUser} autoFocus={!editingUser} /></div>
             <div className="form-group grow"><label>Nombre completo</label><input value={draft.displayName} onChange={(event) => setDraft({ ...draft, displayName: event.target.value })} placeholder="Nombre completo" /></div>
-            <div className="form-group"><label>Rol</label><select value={draft.role} onChange={(event) => setDraft({ ...draft, role: event.target.value })}><option value="operator">Operante</option><option value="boss">Jefe</option></select></div>
+            <div className="form-group"><label>Rol</label><select value={draft.role} onChange={(event) => setDraft({ ...draft, role: event.target.value })}>{USER_ROLES.map((role) => <option value={role} key={role}>{ROLE_META[role].label}</option>)}</select>{draft.role === 'admin' && <small>Puede administrar usuarios, contenido y configuración.</small>}</div>
             <div className="form-group grow"><label>Cargo</label><input value={draft.jobTitle} onChange={(event) => setDraft({ ...draft, jobTitle: event.target.value })} placeholder="ej. Supervisor de bodega" /></div>
             <div className="form-group grow"><label>Área</label><input value={draft.department} onChange={(event) => setDraft({ ...draft, department: event.target.value })} placeholder="ej. Logística" /></div>
             {editingUser?.username === 'invitado.nissei' && <div className="form-group grow"><label>Foto al iniciar cuestionarios</label><select value={draft.requireQuizPhotoOverride == null ? 'default' : String(draft.requireQuizPhotoOverride)} onChange={(event) => setDraft({ ...draft, requireQuizPhotoOverride: event.target.value === 'default' ? null : event.target.value === 'true' })}><option value="default">Usar configuración general</option><option value="true">Solicitar foto</option><option value="false">No solicitar foto</option></select><small>Este ajuste se aplica solo al usuario invitado.</small></div>}
@@ -1964,12 +1950,12 @@ function UsersManager({ onCreateUser, onUpdateUser, onNotify }) {
               <span className="status-badge">{ROLE_META[user.role]?.label || user.role}</span>
               <span className={`status-badge ${user.active ? '' : 'status-badge--off'}`}>{user.active ? 'Activo' : 'Deshabilitado'}</span>
               <div className="row-actions">
-                <button onClick={() => openEdit(user)} aria-label="Editar"><Pencil size={16} /></button>
-                <button className={user.active ? 'danger' : ''} onClick={() => toggleActive(user)} aria-label={user.active ? 'Deshabilitar' : 'Habilitar'}>{user.active ? <X size={16} /> : <Check size={16} />}</button>
+                <button onClick={() => openEdit(user)} disabled={user.isCurrentUser} title={user.isCurrentUser ? 'Tu cuenta actual está protegida' : 'Editar usuario'} aria-label="Editar"><Pencil size={16} /></button>
+                <button className={user.active ? 'danger' : ''} onClick={() => toggleActive(user)} disabled={user.isCurrentUser} title={user.isCurrentUser ? 'Tu cuenta actual está protegida' : undefined} aria-label={user.active ? 'Deshabilitar' : 'Habilitar'}>{user.active ? <X size={16} /> : <Check size={16} />}</button>
               </div>
             </div>
           ))}
-          {!loading && !loadError && !users.length && <EmptyState icon={UsersRound} title="Aún no hay usuarios" text="Crea la primera cuenta de operante o jefe." />}
+          {!loading && !loadError && !users.length && <EmptyState icon={UsersRound} title="Aún no hay usuarios" text="Crea una cuenta y asígnale uno de los cinco roles." />}
         </div>
       </section>
       <aside className="security-card"><span><LockKeyhole size={22} /></span><h3>Cuentas individuales</h3><p>Cada usuario inicia sesión con su propio usuario y contraseña, administrados por Supabase Auth.</p><ul><li><Check size={14} /> Contraseñas fuera del frontend</li><li><Check size={14} /> Sesiones administradas por Supabase</li><li><Check size={14} /> Permisos RLS por rol</li></ul></aside>
@@ -1979,6 +1965,9 @@ function UsersManager({ onCreateUser, onUpdateUser, onNotify }) {
 
 function ProgressManager({ data }) {
   const [users, setUsers] = useState([])
+  const [userQuery, setUserQuery] = useState('')
+  const [roleFilter, setRoleFilter] = useState('all')
+  const [progressFilter, setProgressFilter] = useState('all')
   const [progress, setProgress] = useState([])
   const [quizResults, setQuizResults] = useState([])
   const [loading, setLoading] = useState(true)
@@ -2015,8 +2004,8 @@ function ProgressManager({ data }) {
   }, [])
 
   const eligibleVideoIdsByRole = useMemo(() => {
-    const result = { operator: new Set(), boss: new Set() }
-    for (const role of ['operator', 'boss']) {
+    const result = Object.fromEntries(VIEWER_ROLES.map((role) => [role, new Set()]))
+    for (const role of VIEWER_ROLES) {
       const visibleSectionIds = new Set(data.sections.filter((section) => section.roles.includes(role)).map((section) => section.id))
       data.videos.forEach((video) => {
         if (visibleSectionIds.has(video.assignments[role]) && !isVideoLockedFor(video, role)) {
@@ -2059,13 +2048,28 @@ function ProgressManager({ data }) {
     return map
   }, [quizResults])
 
+  const visibleUsers = useMemo(() => {
+    const normalize = (value) => String(value || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase()
+    const query = normalize(userQuery.trim())
+    return users.filter((user) => {
+      if (roleFilter !== 'all' && user.role !== roleFilter) return false
+      const searchable = normalize([user.displayName, user.username, user.jobTitle, user.department].join(' '))
+      if (query && !searchable.includes(query)) return false
+      if (progressFilter === 'all') return true
+      const eligible = eligibleVideoIdsByRole[user.role] || new Set()
+      const completed = completedByUser.get(user.userId) || new Set()
+      const hasProgress = [...eligible].some((videoId) => completed.has(videoId))
+      return progressFilter === 'started' ? hasProgress : !hasProgress
+    })
+  }, [users, userQuery, roleFilter, progressFilter, eligibleVideoIdsByRole, completedByUser])
+
   // Base para la gráfica "Actividad por video": por cada video, cuántas de
   // las personas que pueden verlo ya lo vieron / ya respondieron su
   // cuestionario, contra cuántas todavía no.
   const videoActivityStats = useMemo(() => {
     return data.videos
       .map((video) => {
-        const eligibleRoles = ['operator', 'boss'].filter((role) => eligibleVideoIdsByRole[role]?.has(video.id))
+        const eligibleRoles = VIEWER_ROLES.filter((role) => eligibleVideoIdsByRole[role]?.has(video.id))
         const eligibleUsers = users.filter((user) => eligibleRoles.includes(user.role))
         const total = eligibleUsers.length
         const watchedCount = eligibleUsers.filter((user) => completedByUser.get(user.userId)?.has(video.id)).length
@@ -2090,10 +2094,7 @@ function ProgressManager({ data }) {
     setExportError('')
     try {
       const allAttempts = await listAllQuizAttempts()
-      const videosByRole = {
-        operator: data.videos.filter((video) => eligibleVideoIdsByRole.operator.has(video.id)),
-        boss: data.videos.filter((video) => eligibleVideoIdsByRole.boss.has(video.id)),
-      }
+      const videosByRole = Object.fromEntries(VIEWER_ROLES.map((role) => [role, data.videos.filter((video) => eligibleVideoIdsByRole[role].has(video.id))]))
       await downloadUsersExcel({
         organization: data.organization,
         users,
@@ -2118,10 +2119,16 @@ function ProgressManager({ data }) {
         </div>
         {exportError && <p className="form-error access-error">{exportError}</p>}
         <VideoActivityChart stats={videoActivityStats} />
+        <div className="progress-filters">
+          <label className="search-field progress-filters__search"><Search size={16} /><input type="search" value={userQuery} onChange={(event) => setUserQuery(event.target.value)} placeholder="Buscar por nombre, usuario, cargo o área" aria-label="Buscar usuarios" /></label>
+          <label className="progress-filters__select"><span>Rol</span><select value={roleFilter} onChange={(event) => setRoleFilter(event.target.value)}><option value="all">Todos los roles</option>{VIEWER_ROLES.map((role) => <option value={role} key={role}>{ROLE_META[role].label}</option>)}</select></label>
+          <label className="progress-filters__select"><span>Avance</span><select value={progressFilter} onChange={(event) => setProgressFilter(event.target.value)}><option value="all">Todos</option><option value="started">Con videos vistos</option><option value="not-started">Sin videos vistos</option></select></label>
+          {!loading && !loadError && <span className="progress-filters__count">{visibleUsers.length} de {users.length} usuarios</span>}
+        </div>
         <div className="progress-list">
           <div className="progress-list__head"><span>Usuario</span><span>Rol</span><span>Videos vistos</span><span>Cuestionarios</span><span /></div>
           {!loading && loadError && <p className="form-error access-error">{loadError}</p>}
-          {!loading && !loadError && users.map((user) => {
+          {!loading && !loadError && visibleUsers.map((user) => {
             const eligible = eligibleVideoIdsByRole[user.role] || new Set()
             const completed = completedByUser.get(user.userId) || new Set()
             const completedCount = [...eligible].filter((id) => completed.has(id)).length
@@ -2150,7 +2157,8 @@ function ProgressManager({ data }) {
               </button>
             )
           })}
-          {!loading && !loadError && !users.length && <EmptyState icon={BarChart3} title="Aún no hay usuarios" text="Crea usuarios de operante o jefe para ver su progreso." />}
+          {!loading && !loadError && !users.length && <EmptyState icon={BarChart3} title="Aún no hay usuarios" text="Crea usuarios y asígnales un rol para ver su progreso." />}
+          {!loading && !loadError && users.length > 0 && !visibleUsers.length && <EmptyState icon={Search} title="No encontramos usuarios" text="Prueba otra búsqueda o cambia los filtros." />}
         </div>
       </section>
 
@@ -2480,7 +2488,7 @@ function RolePreview({ data }) {
 
   return (
     <div className="manager-stack">
-      <section className="preview-switcher"><div><span>Visualizando como</span><strong>{ROLE_META[role].label} · {availableVideos.length} disponibles · {blockedVideos.length} bloqueados</strong></div><div>{['operator', 'boss'].map((item) => <button className={item === role ? 'active' : ''} onClick={() => switchRole(item)} key={item}>{ROLE_META[item].short} {ROLE_META[item].label}</button>)}</div></section>
+      <section className="preview-switcher"><div><span>Visualizando como</span><strong>{ROLE_META[role].label} · {availableVideos.length} disponibles · {blockedVideos.length} bloqueados</strong></div><label className="preview-role-select">Rol <select aria-label="Rol de la vista previa" value={role} onChange={(event) => switchRole(event.target.value)}>{VIEWER_ROLES.map((item) => <option value={item} key={item}>{ROLE_META[item].label}</option>)}</select></label></section>
       <section className="panel role-preview-frame">
         <header className="role-preview-chrome"><div aria-hidden="true"><i /><i /><i /></div><span><Eye size={13} /> Vista interactiva: navega como lo haría este rol</span><button type="button" onClick={resetPreview}><Home size={14} /> Reiniciar vista</button></header>
         <div className="role-preview-app">

@@ -1,3 +1,5 @@
+import { ROLE_META } from '../data.js'
+
 function formatDate(value) {
   if (!value) return ''
   const date = new Date(value)
@@ -100,7 +102,7 @@ export async function buildUsersWorkbook({ organization, users, videosByRole, pr
     return {
       Usuario: user.username,
       'Nombre completo': user.displayName || '',
-      Rol: user.role === 'operator' ? 'Operante' : user.role === 'boss' ? 'Jefe' : user.role,
+      Rol: ROLE_META[user.role]?.label || user.role,
       Cargo: user.jobTitle || '',
       Área: user.department || '',
       Estado: user.active ? 'Activo' : 'Deshabilitado',
@@ -124,7 +126,7 @@ export async function buildUsersWorkbook({ organization, users, videosByRole, pr
       videoRows.push({
         Usuario: user.username,
         'Nombre completo': user.displayName || '',
-        Rol: user.role === 'operator' ? 'Operante' : 'Jefe',
+        Rol: ROLE_META[user.role]?.label || user.role,
         Video: video.title,
         Visto: watched ? 'Sí' : 'No',
         'Tiene cuestionario': video.quiz ? 'Sí' : 'No',

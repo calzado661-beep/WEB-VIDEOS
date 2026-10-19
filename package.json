@@ -11,6 +11,8 @@
     "test:drive-import": "node --test scripts/drive-import.test.mjs",
     "test:video-utils": "node --test scripts/video-utils.test.mjs",
     "test:learning": "node --test scripts/learning-rules.test.mjs scripts/learning-database.test.mjs",
+    "test:roles": "node --test scripts/roles-api.test.mjs scripts/managed-users-compatibility.test.mjs",
+    "prepare:roles-sql": "node scripts/prepare-roles-sql.mjs",
     "check:supabase": "node scripts/check-supabase.mjs",
     "check:supabase-schema": "node scripts/check-supabase-schema.mjs",
     "provision:admin-user": "node scripts/provision-admin-user.mjs",

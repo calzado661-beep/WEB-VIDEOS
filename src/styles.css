@@ -433,6 +433,12 @@ button { cursor: pointer; }
 .progress-list__head, .progress-row { display: grid; grid-template-columns: minmax(180px, 1.2fr) 90px minmax(150px, 1fr) minmax(150px, .8fr) 24px; gap: 15px; align-items: center; padding: 0 23px; }.progress-list__head { height: 39px; color: var(--muted-2); border-bottom: 1px solid var(--border); background: var(--surface-2); font-size: 8px; letter-spacing: .6px; text-transform: uppercase; }.progress-row { min-height: 72px; border-bottom: 1px solid var(--border); }.progress-row:last-child { border: 0; }
 .progress-row--clickable { width: 100%; color: inherit; border: 0; background: transparent; font: inherit; text-align: left; cursor: pointer; transition: background .15s ease; }.progress-row--clickable:hover { background: var(--surface-2); }.progress-row--clickable:hover .progress-row__detail { color: var(--gold); transform: translateX(2px); }
 .progress-row__detail { display: flex; align-items: center; justify-content: center; color: var(--muted-2); transition: transform .15s ease, color .15s ease; }
+.progress-filters { display: flex; align-items: end; gap: 10px; flex-wrap: wrap; padding: 14px 23px; border-bottom: 1px solid var(--border); }
+.progress-filters__search { flex: 1 1 280px; max-width: 440px; }
+.progress-filters__search input { width: 100%; min-width: 0; }
+.progress-filters__select { display: grid; gap: 5px; min-width: 145px; color: var(--muted); font-size: 9px; font-weight: 700; }
+.progress-filters__select select { height: 40px; padding: 0 11px; color: var(--text); border: 1px solid var(--border); border-radius: 9px; background: var(--bg-soft); font: inherit; font-size: 10px; }
+.progress-filters__count { margin-left: auto; padding-bottom: 11px; color: var(--muted); font-size: 10px; white-space: nowrap; }
 .section-row, .user-row, .progress-row, .document-admin-card { transition: background .16s ease, border-color .16s ease, transform .16s ease; }.section-row:hover, .user-row:hover, .progress-row:hover { background: var(--surface-2); }.section-list__head, .user-list__head, .progress-list__head { font-weight: 800; }.section-list, .user-list, .progress-list { overflow: hidden; }
 
 /* Video activity chart */
@@ -620,6 +626,7 @@ button { cursor: pointer; }
   .toolbar-actions { width: 100%; }.manager-toolbar { align-items: flex-start; flex-direction: column; }.toolbar-actions .search-field { flex: 1; }.toolbar-actions .search-field input { width: 100%; }.inline-form { align-items: stretch; flex-direction: column; padding: 15px; }.inline-form .form-submit { width: 100%; }
   .section-list__head { display: none; }.section-row { position: relative; grid-template-columns: 1fr; gap: 11px; padding: 15px; }.section-row > .order-buttons { position: absolute; right: 53px; top: 15px; }.section-row > .row-actions { position: absolute; right: 15px; top: 15px; }.section-row > .row-actions button:first-child { display: none; }.section-content-modal .document-upload-form, .section-content-modal .document-admin-grid { grid-template-columns: 1fr; }.section-content-videos__heading { align-items: flex-start; flex-direction: column; }
   .user-list__head, .progress-list__head { display: none; }.user-row, .progress-row { position: relative; grid-template-columns: 1fr; gap: 10px; padding: 15px; }.user-row > .row-actions { position: absolute; right: 15px; top: 15px; }.progress-row > * { min-width: 0; }.progress-row__detail { position: absolute; right: 16px; top: 18px; }
+  .progress-filters { padding: 14px 15px; }.progress-filters__search { flex-basis: 100%; max-width: none; }.progress-filters__select { flex: 1 1 140px; }.progress-filters__count { width: 100%; margin: 0; padding: 0; }
   .video-admin-grid, .viewer-video-grid, .viewer-document-grid, .document-admin-grid { grid-template-columns: 1fr; padding: 13px; }.document-upload-form { grid-template-columns: 1fr; padding: 16px; }.document-upload-form .primary-button { width: 100%; }.document-security-badge { align-self: flex-start; }.video-form { padding: 16px; }.form-row, .thumbnail-config { grid-template-columns: 1fr; }.thumbnail-preview { max-width: 220px; }.assignment-box { grid-template-columns: 1fr; }.assignment-box > div:first-child { grid-column: auto; }.video-form .form-actions { flex-direction: row; }.code-cards { padding: 15px; }.access-panel .form-actions { margin: 0 15px; }.preview-panel { grid-template-columns: 1fr; }.preview-sidebar { display: none; }.preview-content { padding: 28px 22px; }.preview-switcher { align-items: flex-start; flex-direction: column; gap: 11px; }
   .global-search { width: min(240px, calc(100% - 105px)); }.viewer-profile > div { display: none; }.viewer-welcome { align-items: flex-start; flex-direction: column; }.viewer-date { display: none; }.hero-video { min-height: 370px; padding: 27px 22px; }.hero-video__texture { right: -60px; top: 31%; width: 220px; height: 220px; }.hero-video__play { right: 50px; top: 29%; width: 62px; height: 62px; }.hero-video__copy { margin-top: 120px; }.hero-video h2 { font-size: 28px; }.category-grid { grid-template-columns: 1fr; }.viewer-section-heading { align-items: flex-start; gap: 10px; flex-direction: column; }.viewer-video-grid { padding: 0; }.video-frame { margin: 0 -15px; border-left: 0; border-right: 0; border-radius: 0; }.player-copy { padding-top: 18px; }
 }
@@ -627,3 +634,12 @@ button { cursor: pointer; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; }
 }
+
+/* Four content audiences, with room for longer role names. */
+.role-checks { height: auto; min-height: 40px; flex-wrap: wrap; gap: 4px; padding: 4px; }
+.role-checks button { min-height: 30px; border: 0; border-radius: 5px; }
+.role-toggles { flex-wrap: wrap; padding-block: 10px; }
+.role-toggles button { flex-shrink: 0; }
+.preview-role-select { display: flex; align-items: center; gap: 9px; color: var(--muted); font-size: 10px; }
+.preview-role-select select { min-width: 160px; padding: 9px 12px; color: var(--text); border: 1px solid var(--border); border-radius: 8px; background: var(--bg-soft); }
+.row-actions button:disabled { opacity: .35; cursor: not-allowed; }

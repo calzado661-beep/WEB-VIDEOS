@@ -2,7 +2,7 @@ import { getVideoSource, parseDurationSeconds } from '../videoUtils'
 import { withLearningAccess, validateLearningSequence } from '../learningRules'
 import { isSupabaseConfigured, supabase } from './supabase'
 
-const VIEWER_ROLES = ['operator', 'boss']
+import { VIEWER_ROLES } from '../data.js'
 const DATABASE_PROVIDERS = new Set([
   'youtube',
   'google_drive',
@@ -299,19 +299,23 @@ async function withAdminSession(callback) {
   return callback(session.access_token)
 }
 
-export async function listManagedUsers() {
+export async function listManagedUsers({ includeAdmins = false } = {}) {
   const context = await getCurrentAccessContext()
-  const { data, error } = await getClient()
+  const query = getClient()
     .from('profiles')
     .select('user_id,username,display_name,role,active,created_at,job_title,department,require_quiz_photo_override')
     .eq('organization_id', context.organizationId)
-    .in('role', ['operator', 'boss'])
     .order('created_at')
+  // Filtering by not-yet-installed enum values breaks every profile read.
+  // admin exists in both schema versions; tenant access is still enforced by RLS.
+  if (!includeAdmins) query.neq('role', 'admin')
+  const { data, error } = await query
   throwDatabaseError(error, 'No se pudieron leer los usuarios')
 
   return (data || []).map((row) => ({
     userId: row.user_id,
     username: row.username || '',
+    isCurrentUser: row.user_id === context.userId,
     displayName: row.display_name || '',
     role: row.role,
     active: Boolean(row.active),
@@ -658,7 +662,7 @@ export async function uploadSectionDocument({ organizationId, sectionId, title, 
       code: 'INVALID_DOCUMENT',
     })
   }
-  if (!['operator', 'boss', 'both'].includes(audience)) {
+  if (![...VIEWER_ROLES, 'both'].includes(audience)) {
     throw new VideoHubApiError('Selecciona un rol válido para el documento.', { code: 'INVALID_DOCUMENT_AUDIENCE' })
   }
   if (!file || !mimeType) {
@@ -726,7 +730,7 @@ export async function updateSectionDocumentTitle(documentId, title) {
 }
 
 export async function updateSectionDocumentAudience(documentId, audience) {
-  if (!isUuid(documentId) || !['operator', 'boss', 'both'].includes(audience)) {
+  if (!isUuid(documentId) || ![...VIEWER_ROLES, 'both'].includes(audience)) {
     throw new VideoHubApiError('Selecciona un rol válido para el documento.', { code: 'INVALID_DOCUMENT_AUDIENCE' })
   }
   const { data, error } = await getClient()

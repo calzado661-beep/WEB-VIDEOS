@@ -1,3 +1,5 @@
+import { VIEWER_ROLES } from './data.js'
+
 export const DEFAULT_QUIZ_ATTEMPTS = 3
 
 export function getQuizAttemptState(quiz, result) {
@@ -40,7 +42,7 @@ export function withLearningAccess(videos, sections, role) {
 export function validateLearningSequence(videos, sections) {
   const byId = new Map(videos.map((video) => [video.id, video]))
   for (const video of videos) {
-    for (const role of ['operator', 'boss']) {
+    for (const role of VIEWER_ROLES) {
       const seen = new Set([video.id])
       let previousId = video.prerequisites?.[role]
       while (previousId) {

@@ -83,6 +83,30 @@ const requiredRpcChecks = [
   }],
 ]
 
+// A table can exist while its enum is still missing values expected by the app.
+// Read-only probes also work when no users have been assigned the new roles yet.
+for (const role of ['salesperson', 'management']) {
+  try {
+    const response = await fetch(`${projectUrl}/rest/v1/profiles?select=user_id&role=eq.${role}&limit=0`, {
+      headers: { apikey: secretKey },
+      signal: AbortSignal.timeout(15_000),
+    })
+    const payload = await response.json().catch(() => ({}))
+    if (payload?.code === '22P02') {
+      console.log(`PENDIENTE · Rol ${role} · Aplica las migraciones operational_role_values y operational_role_permissions.`)
+      migrationsPending = true
+    } else if (!response.ok) {
+      console.log(`ERROR · Rol ${role} · HTTP ${response.status}`)
+      failed = true
+    } else {
+      console.log(`OK · Rol ${role}`)
+    }
+  } catch (error) {
+    console.log(`ERROR · Rol ${role} · ${error.name}`)
+    failed = true
+  }
+}
+
 for (const [rpc, body] of requiredRpcChecks) {
   try {
     const response = await fetch(`${projectUrl}/rest/v1/rpc/${rpc}`, {
@@ -107,7 +131,7 @@ for (const [rpc, body] of requiredRpcChecks) {
 }
 
 if (migrationsPending) {
-  console.log('PENDIENTE · Aplica las migraciones 20260804010000 y 20260804020000 para activar todo el hardening.')
+  console.log('PENDIENTE · Aplica las migraciones pendientes de supabase/migrations antes de desplegar.')
 }
 
-if (failed) process.exit(1)
+if (failed || migrationsPending) process.exit(1)
