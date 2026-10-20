@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { getDocumentAudienceLabel } from './documentAudience.js'
 import DocumentAudienceSelect from './DocumentAudienceSelect'
 import { createDocumentUploads, uploadDocumentBatch } from './documentUploads.js'
@@ -35,6 +35,8 @@ export default function DocumentsManager({ data, setData, onNotify, sectionId = 
   const [editingTitle, setEditingTitle] = useState('')
   const [busyId, setBusyId] = useState(null)
   const [fileInputKey, setFileInputKey] = useState(0)
+  const fileInputRef = useRef(null)
+  const [draggingFiles, setDraggingFiles] = useState(false)
   const [query, setQuery] = useState('')
   const [roleFilter, setRoleFilter] = useState('all')
 
@@ -44,6 +46,13 @@ export default function DocumentsManager({ data, setData, onNotify, sectionId = 
       if (draft.sectionId !== nextSectionId) setDraft((current) => ({ ...current, sectionId: nextSectionId }))
     }
   }, [data.sections, draft.sectionId, sectionId])
+
+  const addFiles = (files) => {
+    if (uploading) return
+    const entries = createDocumentUploads(files)
+    setDraft((current) => ({ ...current, files: [...current.files, ...entries] }))
+    setFileInputKey((value) => value + 1)
+  }
 
   const submitDocument = async (event) => {
     event.preventDefault()
@@ -147,12 +156,26 @@ export default function DocumentsManager({ data, setData, onNotify, sectionId = 
           <form className="document-upload-form" onSubmit={submitDocument}>
             {!sectionId && <div className="form-group"><label>Sección</label><select value={draft.sectionId} disabled={uploading} onChange={(event) => setDraft({ ...draft, sectionId: event.target.value })}>{documentSections.map((section) => <option value={section.id} key={section.id}>{section.name}</option>)}</select></div>}
             <div className="form-group"><label htmlFor="document-audience">Visible para</label><DocumentAudienceSelect id="document-audience" value={draft.audience} onChange={(audience) => setDraft((current) => ({ ...current, audience }))} disabled={uploading} /><small>Los roles seleccionados también necesitan tener visible la sección. El rol Administradores solo permite consultar contenido.</small></div>
-            <div className="form-group document-file-field"><label htmlFor="document-files">Archivos</label><input id="document-files" key={fileInputKey} type="file" multiple disabled={uploading} accept=".pdf,.doc,.docx,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document" onChange={(event) => {
-              const entries = createDocumentUploads(event.target.files || [])
-              setDraft((current) => ({ ...current, files: [...current.files, ...entries] }))
-              setFileInputKey((value) => value + 1)
-            }} /></div>
+            <div className={`document-file-dropzone${draggingFiles ? ' is-dragging' : ''}`} onDragOver={(event) => {
+              event.preventDefault()
+              if (!uploading) setDraggingFiles(true)
+            }} onDragLeave={(event) => {
+              if (!event.currentTarget.contains(event.relatedTarget)) setDraggingFiles(false)
+            }} onDrop={(event) => {
+              event.preventDefault()
+              setDraggingFiles(false)
+              addFiles(event.dataTransfer.files)
+            }}>
+              <UploadCloud size={28} aria-hidden="true" />
+              <strong>Arrastra varios documentos aquí</strong>
+              <span>PDF, DOC o DOCX · Hasta 25 MB por archivo</span>
+              <button type="button" className="secondary-button" disabled={uploading} onClick={() => fileInputRef.current?.click()}>Seleccionar varios archivos</button>
+              <small>En la ventana de archivos, usa Ctrl + clic o Shift para seleccionar varios. Puedes añadir más antes de guardar.</small>
+              <input ref={fileInputRef} id="document-files" key={fileInputKey} type="file" multiple hidden disabled={uploading} accept=".pdf,.doc,.docx,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document" onChange={(event) => addFiles(event.target.files || [])} />
+              <span aria-live="polite">{draft.files.length ? `${draft.files.length} archivo${draft.files.length === 1 ? '' : 's'} seleccionado${draft.files.length === 1 ? '' : 's'}` : 'Puedes seleccionar todos tus documentos de una vez'}</span>
+            </div>
             <button className="primary-button" type="submit" disabled={!uploadsEnabled || uploading || !(sectionId || draft.sectionId) || !draft.files.length || draft.files.some((entry) => !entry.title.trim())}>{uploading ? null : <UploadCloud size={17} />}{uploading ? `Subiendo ${uploadProgress}…` : uploadsEnabled ? `Guardar documentos${draft.files.length ? ` (${draft.files.length})` : ''}` : 'Esperando guardado…'}</button>
+            {uploading && <div className="document-upload-progress" role="status"><span>Procesados: {uploadProgress}. Subiendo hasta 3 documentos a la vez.</span></div>}
             {draft.files.length > 0 && <div className="document-upload-queue" aria-live="polite">
               {draft.files.map((entry, index) => <div className="document-upload-queue__item" key={index}>
                 <div><span>{entry.file.name} · {formatFileSize(entry.file.size)}</span><label htmlFor={`document-title-${index}`}>Título visible</label><input id={`document-title-${index}`} value={entry.title} maxLength={180} disabled={uploading} onChange={(event) => setDraft((current) => ({ ...current, files: current.files.map((item, itemIndex) => itemIndex === index ? { ...item, title: event.target.value } : item) }))} />{entry.error && <small className="form-error">{entry.error}</small>}</div>
