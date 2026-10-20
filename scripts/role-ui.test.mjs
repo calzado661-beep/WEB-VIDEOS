@@ -46,6 +46,16 @@ test('las pantallas y sus selectores contemplan los cinco roles', async (t) => {
       assert.doesNotMatch(html, /disabled=""[^>]*title="Acceso total automático"/)
     }
   }
+  const uploadData = { ...data, sections: [...data.sections, { id: 'folder', parentId: 's', name: 'Manuales', roles: ['operator'], order: 1 }, { id: 'empty', name: 'Sin carpetas', roles: ['operator'], order: 2 }] }
+  const renderUpload = (props = {}) => renderToStaticMarkup(createElement(components.DocumentsManager, { data: uploadData, setData() {}, ...props }))
+  const uploadHtml = renderUpload()
+  assert.match(uploadHtml, /id="document-upload-subfolder"/)
+  assert.match(uploadHtml, /<option value="folder">Manuales<\/option>/)
+  const rootSelect = uploadHtml.match(/<select id="document-upload-section"[\s\S]*?<\/select>/)[0]
+  assert.doesNotMatch(rootSelect, /value="folder"/)
+  assert.doesNotMatch(renderUpload({ sectionId: 'empty' }), /document-upload-subfolder/)
+  assert.doesNotMatch(renderUpload({ sectionId: 'folder' }), /document-upload-subfolder/)
+  assert.doesNotMatch(renderUpload({ data }), /document-upload-subfolder/)
   const { prepareSnapshot } = await server.ssrLoadModule('/src/lib/videoHubApi.js')
   const sectionId = '20000000-0000-4000-8000-000000000001'
   const snapshot = {

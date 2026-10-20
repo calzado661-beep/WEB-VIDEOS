@@ -14,6 +14,8 @@ Al eliminar una carpeta, sus videos y documentos vuelven a la sección principal
 
 Los usuarios ven las carpetas autorizadas dentro de su sección, con navegación para entrar y volver. La búsqueda solo incluye el contenido autorizado. No se permite anidar una carpeta dentro de otra.
 
+En Subir documentos, primero se elige la sección principal. Si tiene carpetas, aparece el selector Subcarpeta; si no tiene, el campo completo se oculta. La opción Guardar directamente en la sección permite subir sin carpeta. Cambiar de sección limpia la subcarpeta anterior. Al abrir la subida desde una carpeta, esa carpeta es el destino fijo.
+
 ## Permisos
 
 El acceso es la intersección de los permisos de sección, carpeta y contenido. Tener acceso a la carpeta no concede acceso a su sección principal. Desmarcar el rol en la sección oculta todas sus carpetas, incluso si conservan ese rol marcado para una futura habilitación.

@@ -29,8 +29,9 @@ function EmptyDocuments({ title, text }) {
 }
 
 export default function DocumentsManager({ data, setData, onNotify, sectionId = null, uploadsEnabled = true }) {
-  const documentSections = getSectionTree(data.sections)
-  const [draft, setDraft] = useState({ sectionId: sectionId || documentSections[0]?.id || '', audience: 'both', files: [] })
+  const documentSections = getSectionTree(data.sections).filter((section) => !section.parentId && section.active !== false)
+  const fixedSection = data.sections.find((section) => section.id === sectionId)
+  const [draft, setDraft] = useState({ sectionId: fixedSection?.parentId || sectionId || documentSections[0]?.id || '', folderId: '', audience: 'both', files: [] })
   const [uploading, setUploading] = useState(false)
   const [uploadProgress, setUploadProgress] = useState('')
   const [editingId, setEditingId] = useState(null)
@@ -41,13 +42,16 @@ export default function DocumentsManager({ data, setData, onNotify, sectionId = 
   const [draggingFiles, setDraggingFiles] = useState(false)
   const [query, setQuery] = useState('')
   const [roleFilter, setRoleFilter] = useState('all')
+  const selectedSectionId = fixedSection?.parentId || sectionId || draft.sectionId
+  const subfolders = getSectionTree(data.sections).filter((section) => section.parentId === selectedSectionId && section.active !== false)
+  const selectedFolderId = subfolders.some((folder) => folder.id === draft.folderId) ? draft.folderId : ''
+  const uploadSectionId = fixedSection?.parentId ? fixedSection.id : selectedFolderId || selectedSectionId
 
   useEffect(() => {
-    if (documentSections.length && (sectionId || !documentSections.some((section) => section.id === draft.sectionId))) {
-      const nextSectionId = sectionId || documentSections[0].id
-      if (draft.sectionId !== nextSectionId) setDraft((current) => ({ ...current, sectionId: nextSectionId }))
-    }
-  }, [data.sections, draft.sectionId, sectionId])
+    const nextSectionId = fixedSection?.parentId || sectionId || (documentSections.some((section) => section.id === draft.sectionId) ? draft.sectionId : documentSections[0]?.id || '')
+    if (draft.sectionId !== nextSectionId) setDraft((current) => ({ ...current, sectionId: nextSectionId, folderId: '' }))
+    else if (draft.folderId && !subfolders.some((folder) => folder.id === draft.folderId)) setDraft((current) => ({ ...current, folderId: '' }))
+  }, [data.sections, draft.sectionId, draft.folderId, sectionId])
 
   const addFiles = (files) => {
     if (uploading) return
@@ -58,14 +62,14 @@ export default function DocumentsManager({ data, setData, onNotify, sectionId = 
 
   const submitDocument = async (event) => {
     event.preventDefault()
-    if (!uploadsEnabled || !(sectionId || draft.sectionId) || !draft.files.length || draft.files.some((entry) => !entry.title.trim()) || uploading) return
+    if (!uploadsEnabled || !uploadSectionId || !draft.files.length || draft.files.some((entry) => !entry.title.trim()) || uploading) return
     setUploading(true)
     try {
       const { failed, uploadedCount } = await uploadDocumentBatch({
         entries: draft.files,
         upload: ({ file, title }) => uploadSectionDocument({
           organizationId: data.organizationId,
-          sectionId: sectionId || draft.sectionId,
+          sectionId: uploadSectionId,
           title,
           audience: draft.audience,
           file,
@@ -169,8 +173,9 @@ export default function DocumentsManager({ data, setData, onNotify, sectionId = 
       <section className="panel document-upload-panel">
         <div className="manager-toolbar"><div><h2>Subir documentos</h2><p>Selecciona varios archivos PDF, DOC o DOCX. Máximo 25 MB por archivo.</p></div><span className="document-security-badge"><ShieldCheck size={15} /> Almacenamiento privado</span></div>
         {documentSections.length ? (
-          <form className="document-upload-form" onSubmit={submitDocument}>
-            {!sectionId && <div className="form-group"><label>Sección</label><select value={draft.sectionId} disabled={uploading} onChange={(event) => setDraft({ ...draft, sectionId: event.target.value })}>{documentSections.map((section) => <option value={section.id} key={section.id}>{getSectionLabel(section, data.sections)}</option>)}</select></div>}
+          <form className={`document-upload-form${!sectionId && subfolders.length ? ' document-upload-form--folders' : ''}`} onSubmit={submitDocument}>
+            {!sectionId && <div className="form-group"><label htmlFor="document-upload-section">Sección</label><select id="document-upload-section" value={draft.sectionId} disabled={uploading} onChange={(event) => setDraft((current) => ({ ...current, sectionId: event.target.value, folderId: '' }))}>{documentSections.map((section) => <option value={section.id} key={section.id}>{section.name}</option>)}</select></div>}
+            {!fixedSection?.parentId && subfolders.length > 0 && <div className="form-group"><label htmlFor="document-upload-subfolder">Subcarpeta</label><select id="document-upload-subfolder" value={selectedFolderId} disabled={uploading} onChange={(event) => setDraft((current) => ({ ...current, folderId: event.target.value }))}><option value="">Guardar directamente en la sección</option>{subfolders.map((folder) => <option value={folder.id} key={folder.id}>{folder.name}</option>)}</select></div>}
             <div className="form-group"><label htmlFor="document-audience">Visible para</label><DocumentAudienceSelect id="document-audience" value={draft.audience} onChange={(audience) => setDraft((current) => ({ ...current, audience }))} disabled={uploading} /><small>Los roles seleccionados también necesitan tener visible la sección. El rol Administradores solo permite consultar contenido.</small></div>
             <div className={`document-file-dropzone${draggingFiles ? ' is-dragging' : ''}`} onDragOver={(event) => {
               event.preventDefault()
@@ -190,7 +195,7 @@ export default function DocumentsManager({ data, setData, onNotify, sectionId = 
               <input ref={fileInputRef} id="document-files" key={fileInputKey} type="file" multiple hidden disabled={uploading} accept=".pdf,.doc,.docx,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document" onChange={(event) => addFiles(event.target.files || [])} />
               <span aria-live="polite">{draft.files.length ? `${draft.files.length} archivo${draft.files.length === 1 ? '' : 's'} seleccionado${draft.files.length === 1 ? '' : 's'}` : 'Puedes seleccionar todos tus documentos de una vez'}</span>
             </div>
-            <button className="primary-button" type="submit" disabled={!uploadsEnabled || uploading || !(sectionId || draft.sectionId) || !draft.files.length || draft.files.some((entry) => !entry.title.trim())}>{uploading ? null : <UploadCloud size={17} />}{uploading ? `Subiendo ${uploadProgress}…` : uploadsEnabled ? `Guardar documentos${draft.files.length ? ` (${draft.files.length})` : ''}` : 'Esperando guardado…'}</button>
+            <button className="primary-button" type="submit" disabled={!uploadsEnabled || uploading || !uploadSectionId || !draft.files.length || draft.files.some((entry) => !entry.title.trim())}>{uploading ? null : <UploadCloud size={17} />}{uploading ? `Subiendo ${uploadProgress}…` : uploadsEnabled ? `Guardar documentos${draft.files.length ? ` (${draft.files.length})` : ''}` : 'Esperando guardado…'}</button>
             {uploading && <div className="document-upload-progress" role="status"><span>Procesados: {uploadProgress}. Subiendo hasta 3 documentos a la vez.</span></div>}
             {draft.files.length > 0 && <div className="document-upload-queue" aria-live="polite">
               {draft.files.map((entry, index) => <div className="document-upload-queue__item" key={index}>
