@@ -1,11 +1,20 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { canViewSection, canViewVideo, canViewDocument } from '../src/roleAccess.js'
-import { getSectionLabel, getSectionTree, removeFolderFromSnapshot, validateSectionFolders } from '../src/sectionFolders.js'
+import { getDocumentLocations, getSectionLabel, getSectionTree, removeFolderFromSnapshot, validateSectionFolders } from '../src/sectionFolders.js'
 
 const parent = { id: 's', name: 'Calidad', roles: ['operator', 'boss'], order: 0 }
 const folder = { id: 'f', name: 'Manuales', parentId: 's', roles: ['operator', 'management'], order: 1 }
 const sections = [parent, folder]
+
+test('el selector muestra la sección actual y sus subcarpetas sin mezclar otras secciones', () => {
+  const locations = [...sections, { id: 'other', name: 'Otra', roles: [], order: 3 }, { id: 'other-folder', parentId: 'other', order: 4 }]
+  assert.deepEqual(getDocumentLocations('s', locations).map((item) => item.id), ['s', 'f'])
+  assert.deepEqual(getDocumentLocations('f', locations).map((item) => item.id), ['s', 'f'])
+  assert.deepEqual(getDocumentLocations('missing', locations), [])
+  assert.deepEqual(getDocumentLocations('f', [folder]), [])
+  assert.deepEqual(getDocumentLocations('f', [{ ...parent, active: false }, folder]), [])
+})
 
 test('la carpeta requiere permiso propio y de la sección, incluso para enlaces directos', () => {
   const video = { assignments: { operator: 'f', boss: 'f', management: 'f' } }

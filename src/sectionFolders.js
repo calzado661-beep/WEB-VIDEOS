@@ -8,6 +8,15 @@ export function getSectionTree(sections) {
   return sorted.filter((section) => !section.parentId).flatMap((parent) => [parent, ...sorted.filter((section) => section.parentId === parent.id)])
 }
 
+export function getDocumentLocations(sectionId, sections) {
+  const current = sections.find((section) => section.id === sectionId)
+  if (!current) return []
+  const rootId = current.parentId || current.id
+  const root = sections.find((section) => section.id === rootId)
+  if (!root || root.parentId || root.active === false) return []
+  return getSectionTree(sections).filter((section) => section.active !== false && (section.id === rootId || section.parentId === rootId))
+}
+
 export function validateSectionFolders(sections) {
   for (const section of sections) {
     if (!section.parentId) continue

@@ -7,7 +7,7 @@ La navegación tiene dos niveles: **Sección → Carpeta → Videos y documentos
 1. Abre Secciones y pulsa el botón de archivos de una sección.
 2. Pulsa Nueva carpeta, escribe su nombre y marca los roles de contenido.
 3. Guarda la carpeta. El guardado automático confirma su existencia antes de habilitar la subida de archivos.
-4. Abre la carpeta para agregar videos o subir varios documentos. También puedes usar los selectores Ubicación para mover contenido existente.
+4. Abre la carpeta para agregar videos o subir varios documentos. Para mover un documento existente, pulsa su Ubicación, selecciona una subcarpeta de la sección y confirma con Mover aquí. La misma ventana permite devolverlo a la sección principal o elegir otra de sus subcarpetas. Los videos tienen su selector de Ubicación en la lista de archivos.
 5. Los botones de editar permiten renombrar la carpeta y cambiar sus roles. El nombre debe ser único dentro de la sección.
 
 Al eliminar una carpeta, sus videos y documentos vuelven a la sección principal. Se conservan los archivos, títulos, audiencias de documentos, bloqueos y requisitos de videos. La confirmación avisa que el contenido pasará a usar los permisos de su sección principal. Una sección con carpetas no se puede eliminar hasta retirar sus carpetas.

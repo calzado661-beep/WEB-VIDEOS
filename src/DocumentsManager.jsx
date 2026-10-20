@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { getDocumentAudienceLabel } from './documentAudience.js'
 import DocumentAudienceSelect from './DocumentAudienceSelect'
+import DocumentLocationSelect from './DocumentLocationSelect'
 import { createDocumentUploads, uploadDocumentBatch } from './documentUploads.js'
 import { VIEWER_ROLES } from './data.js'
 import { getSectionLabel, getSectionTree } from './sectionFolders.js'
@@ -144,14 +145,16 @@ export default function DocumentsManager({ data, setData, onNotify, sectionId = 
   }
 
   const moveDocument = async (document, targetSectionId) => {
-    if (!uploadsEnabled || busyId || uploading || document.sectionId === targetSectionId) return
+    if (!uploadsEnabled || busyId || uploading) return false
+    if (document.sectionId === targetSectionId) return true
     setBusyId(document.id)
     try {
       const updated = await moveSectionDocument(document.id, targetSectionId)
       setData((current) => ({ ...current, documents: (current.documents || []).map((item) => item.id === document.id ? updated : item) }))
       onNotify?.('Documento movido correctamente. Se aplican los permisos de su nueva ubicación.')
+      return true
     } catch (error) {
-      onNotify?.(errorMessage(error, 'No se pudo mover el documento.'), { tone: 'danger' })
+      return { error: errorMessage(error, 'No se pudo mover el documento.') }
     } finally { setBusyId(null) }
   }
 
@@ -216,7 +219,7 @@ export default function DocumentsManager({ data, setData, onNotify, sectionId = 
                   {editingId === document.id ? <div className="document-title-edit"><input value={editingTitle} maxLength="180" onChange={(event) => setEditingTitle(event.target.value)} autoFocus /><button type="button" onClick={() => saveTitle(document)} disabled={busyId === document.id}><Check size={15} /></button><button type="button" onClick={() => setEditingId(null)}><X size={15} /></button></div> : <h3>{document.title}</h3>}
                   <p>{document.fileName}</p>
                   <div className="document-audience-control"><span>Visible para</span><DocumentAudienceSelect value={document.audience || 'both'} onChange={(audience) => changeAudience(document, audience)} disabled={Boolean(busyId)} label={'Visibilidad de ' + document.title} /></div>
-                  <label className="document-audience-control">Ubicación <select value={document.sectionId} disabled={!uploadsEnabled || Boolean(busyId) || uploading} onChange={(event) => moveDocument(document, event.target.value)} aria-label={`Mover ${document.title}`}>{documentSections.map((location) => <option key={location.id} value={location.id}>{getSectionLabel(location, data.sections)}</option>)}</select></label>
+                  <div className="document-audience-control"><span>Ubicación</span><DocumentLocationSelect document={document} sections={data.sections} supportsFolders={data.supportsFolders !== false} disabled={!uploadsEnabled || Boolean(busyId) || uploading} onMove={(targetSectionId) => moveDocument(document, targetSectionId)} /></div>
                 </div>
                 <div className="document-admin-card__actions"><button type="button" onClick={() => { setEditingId(document.id); setEditingTitle(document.title) }} disabled={Boolean(busyId)}><Pencil size={15} /> Editar título</button><button type="button" className="danger" onClick={() => removeDocument(document)} disabled={Boolean(busyId)}><Trash2 size={15} /> Eliminar</button></div>
               </article>
