@@ -14,7 +14,7 @@ const resources = [
   ['organizations', 'id,name,slug'],
   ['app_settings', 'organization_id,product_name'],
   ['profiles', 'user_id,organization_id,role'],
-  ['sections', 'id,organization_id,name'],
+  ['sections', 'id,organization_id,name,parent_id'],
   ['section_roles', 'section_id,role,visible'],
   ['section_content_settings', 'section_id,organization_id,content_type'],
   ['section_documents', 'id,organization_id,section_id,storage_object_path'],

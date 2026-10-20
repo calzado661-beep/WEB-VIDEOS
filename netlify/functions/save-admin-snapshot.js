@@ -70,6 +70,8 @@ export default async function saveAdminSnapshot(request) {
     })
 
     if (error) {
+      if (error.message === 'FOLDER_CLIENT_REQUIRED') return jsonResponse({ error: 'Recarga la página para conservar las carpetas al guardar.', code: 'FOLDER_CLIENT_REQUIRED' }, 409)
+      if (error.message === 'FOLDER_HIERARCHY_INVALID') return jsonResponse({ error: 'Cada carpeta debe pertenecer a una sección principal activa.', code: 'FOLDER_HIERARCHY_INVALID' }, 409)
       const roleIssue = getRoleSchemaIssue(error)
       if (roleIssue) return jsonResponse(roleIssue, 409)
       if (error.code === 'VL001') return jsonResponse({ error: error.message, code: error.code }, 400)

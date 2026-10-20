@@ -2,20 +2,24 @@ import { ROLE_META, VIEWER_ROLES, hasFullContentAccess } from './data.js'
 import { getDocumentAudienceRoles } from './documentAudience.js'
 
 // Presentation checks match the database rules; Supabase RLS remains authoritative.
-export function canViewSection(section, role) {
-  return Boolean(ROLE_META[role] && section && section.active !== false
-    && (hasFullContentAccess(role) || section.roles?.includes(role)))
+export function canViewSection(section, role, sections = []) {
+  if (!ROLE_META[role] || !section || section.active === false) return false
+  if (hasFullContentAccess(role)) return true
+  if (!section.roles?.includes(role)) return false
+  if (!section.parentId) return true
+  const parent = sections.find((item) => item.id === section.parentId)
+  return Boolean(parent && !parent.parentId && canViewSection(parent, role, sections))
 }
 
 export function canViewVideo(video, role, sections) {
   if (!ROLE_META[role] || !video || video.active === false) return false
   if (hasFullContentAccess(role)) return true
-  return sections.some((section) => section.id === video.assignments?.[role] && canViewSection(section, role))
+  return sections.some((section) => section.id === video.assignments?.[role] && canViewSection(section, role, sections))
 }
 
 export function canViewDocument(document, role, sections) {
   if (!ROLE_META[role] || !document || document.active === false) return false
-  if (!sections.some((section) => section.id === document.sectionId && canViewSection(section, role))) return false
+  if (!sections.some((section) => section.id === document.sectionId && canViewSection(section, role, sections))) return false
   return hasFullContentAccess(role) || getDocumentAudienceRoles(document.audience || 'both').includes(role)
 }
 

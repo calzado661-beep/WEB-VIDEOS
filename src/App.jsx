@@ -24,6 +24,7 @@ import {
   Film,
   FileText,
   FolderCog,
+  Folder,
   Home,
   ImageIcon,
   KeyRound,
@@ -83,6 +84,8 @@ import { createAdminSaveRevisionTracker } from './lib/adminSaveRevision'
 import { withConnectionDeadline } from './lib/connectionDeadline.js'
 import { downloadUsersExcel } from './lib/exportUsersExcel'
 import DocumentsManager from './DocumentsManager'
+import SectionFoldersManager, { SectionVideoLocation } from './SectionFoldersManager'
+import { getSectionLabel, getSectionTree, removeFolderFromSnapshot } from './sectionFolders.js'
 import QuizAttemptsManager from './QuizAttemptsManager'
 import { getQuizAttemptState, withLearningAccess, validateLearningSequence } from './learningRules'
 import {
@@ -161,6 +164,7 @@ function editableSnapshotFingerprint(snapshot) {
     sections: (snapshot.sections || []).map((section) => ({
       id: section.id,
       name: section.name,
+      parentId: section.parentId || null,
       slug: section.slug || '',
       icon: section.icon,
       roles: [...(section.roles || [])].sort(),
@@ -996,6 +1000,17 @@ function AdminApp({
   }
 
   const removeSection = (sectionId) => {
+    const target = data.sections.find((section) => section.id === sectionId)
+    if (target?.parentId) {
+      if (!window.confirm(`¿Eliminar la carpeta “${target.name}”? Sus videos y documentos volverán a la sección principal y usarán sus permisos.`)) return
+      setData((current) => removeFolderFromSnapshot(current, sectionId))
+      notify('Carpeta eliminada. Su contenido volvió a la sección principal.')
+      return
+    }
+    if (data.sections.some((section) => section.parentId === sectionId)) {
+      notify('Elimina primero las carpetas de esta sección. Su contenido volverá a la sección principal.', { tone: 'danger' })
+      return
+    }
     const sectionName = data.sections.find((section) => section.id === sectionId)?.name || 'esta sección'
     const documentCount = (data.documents || []).filter((document) => document.sectionId === sectionId).length
     if (documentCount) {
@@ -1088,7 +1103,7 @@ function AdminApp({
           {page === 'overview' && <AdminOverview data={data} onNavigate={navigate} />}
           {page === 'sections' && <SectionsManager data={data} setData={setData} saveState={saveState} onRemove={removeSection} onNotify={notify} onManageVideos={(sectionId) => { setVideoSectionToAdd(sectionId); navigate('videos') }} />}
           {page === 'videos' && <VideosManager data={data} setData={setData} saveState={saveState} persistedVideoIdsRef={persistedVideoIdsRef} onNotify={notify} initialSectionId={videoSectionToAdd} />}
-          {page === 'documents' && <DocumentsManager data={data} setData={setData} onNotify={notify} />}
+          {page === 'documents' && <DocumentsManager data={data} setData={setData} onNotify={notify} uploadsEnabled={saveState.status === 'saved'} />}
           {page === 'settings' && <SettingsManager data={data} setData={setData} />}
           {page === 'users' && <UsersManager onCreateUser={onCreateUser} onUpdateUser={onUpdateUser} onNotify={notify} />}
           {page === 'progress' && <ProgressManager data={data} />}
@@ -1158,7 +1173,7 @@ function AdminOverview({ data, onNavigate }) {
   })
   const stats = [
     { label: 'Videos publicados', value: data.videos.length, note: 'en la biblioteca', icon: Play, tone: 'red' },
-    { label: 'Secciones activas', value: data.sections.length, note: 'entre todos los roles', icon: Layers3, tone: 'blue' },
+    { label: 'Secciones activas', value: data.sections.filter((section) => !section.parentId).length, note: `${data.sections.filter((section) => section.parentId).length} carpetas dentro de las secciones`, icon: Layers3, tone: 'blue' },
     { label: 'Roles de usuarios', value: USER_ROLES.length, note: 'Cinco roles de contenido y gestión de la página', icon: UsersRound, tone: 'green' },
     { label: 'Asignaciones por rol', value: roleStats.filter((item) => !hasFullContentAccess(item.role)).reduce((sum, item) => sum + item.total, 0), note: 'videos con una sección visible', icon: BriefcaseBusiness, tone: 'violet' },
   ]
@@ -1243,12 +1258,16 @@ function SectionsManager({ data, setData, saveState, onRemove, onNotify, onManag
 
   const move = (sectionId, direction) => {
     setData((current) => {
-      const sorted = [...current.sections].sort((a, b) => a.order - b.order)
+      const selected = current.sections.find((section) => section.id === sectionId)
+      const sorted = current.sections.filter((section) => (section.parentId || null) === (selected?.parentId || null)).sort((a, b) => a.order - b.order)
       const index = sorted.findIndex((section) => section.id === sectionId)
       const target = index + direction
       if (index < 0 || target < 0 || target >= sorted.length) return current
       ;[sorted[index], sorted[target]] = [sorted[target], sorted[index]]
-      return { ...current, sections: sorted.map((section, order) => ({ ...section, order })) }
+      return { ...current, sections: current.sections.map((section) => {
+        const order = sorted.findIndex((item) => item.id === section.id)
+        return order < 0 ? section : { ...section, order }
+      }) }
     })
   }
 
@@ -1261,7 +1280,7 @@ function SectionsManager({ data, setData, saveState, onRemove, onNotify, onManag
     setEditingId(null)
   }
 
-  const sortedSections = [...data.sections].sort((a, b) => a.order - b.order)
+  const sortedSections = getSectionTree(data.sections)
   const openSection = data.sections.find((section) => section.id === openSectionId)
   const sectionVideos = data.videos.filter((video) => Object.values(video.assignments || {}).includes(openSectionId))
 
@@ -1292,15 +1311,18 @@ function SectionsManager({ data, setData, saveState, onRemove, onNotify, onManag
         <div className="section-list">
           <div className="section-list__head"><span>Sección</span><span>Visibilidad</span><span>Archivos</span><span>Orden</span><span>Acciones</span></div>
           {sortedSections.map((section, index) => {
-            const Icon = ICONS[section.icon] || Layers3
+            const parent = data.sections.find((item) => item.id === section.parentId)
+            const siblings = sortedSections.filter((item) => (item.parentId || null) === (section.parentId || null))
+            const siblingIndex = siblings.findIndex((item) => item.id === section.id)
+            const Icon = section.parentId ? Folder : ICONS[section.icon] || Layers3
             const count = data.videos.filter((video) => Object.values(video.assignments).includes(section.id)).length
             const documentCount = (data.documents || []).filter((document) => document.sectionId === section.id).length
             return (
-              <div className="section-row" key={section.id}>
-                <div className="section-identity"><span className="section-icon"><Icon size={18} /></span>{editingId === section.id ? <div className="inline-edit"><input value={editingName} onChange={(event) => setEditingName(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') saveName(section.id) }} autoFocus /><button onClick={() => saveName(section.id)}><Check size={15} /></button></div> : <div><strong>{section.name}</strong><small>/{section.id.split('-').slice(0, -1).join('-') || section.id}</small></div>}</div>
-                <div className="role-toggles">{VIEWER_ROLES.map((role) => <button className={section.roles.includes(role) ? 'on' : ''} aria-pressed={section.roles.includes(role)} onClick={() => toggleRole(section.id, role)} key={role}><span>{section.roles.includes(role) && <Check size={11} />}</span>{ROLE_META[role].label}</button>)}</div>
-                <button type="button" className="section-files-button" onClick={() => { setOpenSectionId(section.id); setActiveTab('videos') }} aria-label={`Ver videos y documentos de ${section.name}`} title="Ver videos y documentos"><Eye size={17} /><span>{count} videos · {documentCount} docs</span></button>
-                <div className="order-buttons"><button disabled={index === 0} onClick={() => move(section.id, -1)}><ChevronLeft size={16} /></button><button disabled={index === sortedSections.length - 1} onClick={() => move(section.id, 1)}><ChevronRight size={16} /></button></div>
+              <div className={`section-row${section.parentId ? ' section-row--folder' : ''}`} key={section.id}>
+                <div className="section-identity"><span className="section-icon"><Icon size={18} /></span>{editingId === section.id ? <div className="inline-edit"><input value={editingName} onChange={(event) => setEditingName(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') saveName(section.id) }} autoFocus /><button onClick={() => saveName(section.id)}><Check size={15} /></button></div> : <div><strong>{getSectionLabel(section, data.sections)}</strong><small>/{section.id.split('-').slice(0, -1).join('-') || section.id}</small></div>}</div>
+                <div className="role-toggles">{VIEWER_ROLES.map((role) => <button className={section.roles.includes(role) ? 'on' : ''} aria-pressed={section.roles.includes(role)} disabled={Boolean(parent && !parent.roles.includes(role))} title={parent && !parent.roles.includes(role) ? 'Primero habilita este rol en la sección principal.' : undefined} onClick={() => toggleRole(section.id, role)} key={role}><span>{section.roles.includes(role) && <Check size={11} />}</span>{ROLE_META[role].label}</button>)}</div>
+                <button type="button" className="section-files-button" onClick={() => { setOpenSectionId(section.id); setActiveTab('videos') }} aria-label={`Ver videos y documentos de ${section.name}`} title="Ver carpetas, videos y documentos"><Eye size={17} /><span>{count} videos · {documentCount} docs{!section.parentId && ` · ${data.sections.filter((item) => item.parentId === section.id).length} carpetas`}</span></button>
+                <div className="order-buttons"><button disabled={siblingIndex === 0} onClick={() => move(section.id, -1)}><ChevronLeft size={16} /></button><button disabled={siblingIndex === siblings.length - 1} onClick={() => move(section.id, 1)}><ChevronRight size={16} /></button></div>
                 <div className="row-actions"><button onClick={() => { setEditingId(section.id); setEditingName(section.name) }}><Pencil size={16} /></button><button className="danger" onClick={() => onRemove(section.id)}><Trash2 size={16} /></button></div>
               </div>
             )
@@ -1312,12 +1334,14 @@ function SectionsManager({ data, setData, saveState, onRemove, onNotify, onManag
         <div className="modal-overlay" onMouseDown={(event) => { if (event.target === event.currentTarget) setOpenSectionId(null) }}>
           <div className="modal-panel section-content-modal" role="dialog" aria-modal="true" aria-label={`Archivos de ${openSection.name}`}>
             <div className="modal-panel__head"><div><h2>{openSection.name}</h2><p>Videos y documentos relacionados con esta sección.</p></div><button type="button" className="icon-button" onClick={() => setOpenSectionId(null)} aria-label="Cerrar"><X size={19} /></button></div>
+            {openSection.parentId && <button type="button" className="secondary-button section-folder-back" onClick={() => setOpenSectionId(openSection.parentId)}><ArrowLeft size={16} /> Volver a {data.sections.find((item) => item.id === openSection.parentId)?.name}</button>}
+            {!openSection.parentId && <SectionFoldersManager key={openSection.id} section={openSection} data={data} setData={setData} onOpen={setOpenSectionId} onRemove={onRemove} />}
             <div className="section-content-tabs" role="tablist" aria-label="Tipo de archivo">
               <button type="button" role="tab" aria-selected={activeTab === 'videos'} className={activeTab === 'videos' ? 'active' : ''} onClick={() => setActiveTab('videos')}><Video size={16} /> Videos <span>{sectionVideos.length}</span></button>
               <button type="button" role="tab" aria-selected={activeTab === 'documents'} className={activeTab === 'documents' ? 'active' : ''} onClick={() => setActiveTab('documents')}><FileText size={16} /> Documentos <span>{(data.documents || []).filter((document) => document.sectionId === openSection.id).length}</span></button>
             </div>
             <div className="modal-panel__body section-content-modal__body">
-              {activeTab === 'videos' ? <div className="section-content-videos"><div className="section-content-videos__heading"><p>Videos asignados a esta sección por cada rol.</p><button type="button" className="primary-button" onClick={() => { setOpenSectionId(null); onManageVideos(openSection.id) }}><Plus size={16} /> Agregar video</button></div>{sectionVideos.map((video) => <div className="section-content-video" key={video.id}><span><Film size={17} /></span><div><strong>{video.title}</strong><small>{Object.entries(video.assignments || {}).filter(([, id]) => id === openSection.id).map(([role]) => ROLE_META[role]?.label || role).join(' · ')}</small></div></div>)}{!sectionVideos.length && <EmptyState icon={Film} title="Aún no hay videos" text="Agrega un video y asígnalo a esta sección desde la biblioteca." />}</div> : <DocumentsManager data={data} setData={setData} onNotify={onNotify} sectionId={openSection.id} uploadsEnabled={saveState.status === 'saved'} />}
+              {activeTab === 'videos' ? <div className="section-content-videos"><div className="section-content-videos__heading"><p>Videos asignados a esta sección por cada rol.</p><button type="button" className="primary-button" onClick={() => { setOpenSectionId(null); onManageVideos(openSection.id) }}><Plus size={16} /> Agregar video</button></div>{sectionVideos.map((video) => <SectionVideoLocation key={video.id} video={video} section={openSection} data={data} setData={setData} />)}{!sectionVideos.length && <EmptyState icon={Film} title="Aún no hay videos" text="Agrega un video y asígnalo a esta sección desde la biblioteca." />}</div> : <DocumentsManager data={data} setData={setData} onNotify={onNotify} sectionId={openSection.id} uploadsEnabled={saveState.status === 'saved'} />}
             </div>
           </div>
         </div>, document.body)}
@@ -1351,7 +1375,7 @@ function VideosManager({ data, setData, saveState, persistedVideoIdsRef, onNotif
   const quizEditorRef = useRef(null)
 
   const sectionsFor = (role) => [...data.sections]
-    .filter((section) => canViewSection(section, role))
+    .filter((section) => canViewSection(section, role, data.sections))
     .sort((a, b) => a.order - b.order)
 
   const openNew = (sectionId = null) => {
@@ -1364,7 +1388,7 @@ function VideosManager({ data, setData, saveState, persistedVideoIdsRef, onNotif
       ...emptyVideoDraft,
       ...Object.fromEntries(USER_ROLES.flatMap((role) => [
         [`${role}Enabled`, hasFullContentAccess(role) || (selectedSection ? selectedSection.roles.includes(role) : role === defaultRole)],
-        [`${role}Section`, selectedSection && canViewSection(selectedSection, role) ? selectedSection.id : sectionsFor(role)[0]?.id || ''],
+        [`${role}Section`, selectedSection && canViewSection(selectedSection, role, data.sections) ? selectedSection.id : sectionsFor(role)[0]?.id || ''],
       ])),
     })
     setFormOpen(true)
@@ -1538,7 +1562,7 @@ function VideosManager({ data, setData, saveState, persistedVideoIdsRef, onNotif
                 return (
                   <div className={`assignment-card ${enabled ? 'enabled' : ''}`} key={role}>
                     <label className="switch-line"><span className="role-avatar">{ROLE_META[role].short}</span><div><strong>{ROLE_META[role].label}</strong><small>{enabled ? 'Puede ver este video' : 'Sin acceso'}</small></div><input type="checkbox" checked={enabled} onChange={(event) => setDraft({ ...draft, [enabledKey]: event.target.checked })} /><i /></label>
-                    {enabled && <><div className="form-group"><label>Mostrar en la sección</label><select value={draft[sectionKey]} onChange={(event) => setDraft({ ...draft, [sectionKey]: event.target.value })}><option value="">Seleccionar…</option>{data.sections.filter((section) => section.id === draft[sectionKey] && !canViewSection(section, role)).map((section) => <option value={section.id} key={section.id}>{section.name} · Oculta para este rol</option>)}{sectionsFor(role).map((section) => <option value={section.id} key={section.id}>{section.name}</option>)}</select></div><label className={`role-lock-toggle ${draft[lockedKey] ? 'is-locked' : ''}`}><input type="checkbox" checked={draft[lockedKey]} onChange={(event) => setDraft({ ...draft, [lockedKey]: event.target.checked })} /><span><LockKeyhole size={15} /></span><div><strong>Mostrar como bloqueado</strong><small>Verá la tarjeta, pero no podrá reproducir el video.</small></div><i /></label></>}
+                    {enabled && <><div className="form-group"><label>Mostrar en la sección</label><select value={draft[sectionKey]} onChange={(event) => setDraft({ ...draft, [sectionKey]: event.target.value })}><option value="">Seleccionar…</option>{data.sections.filter((section) => section.id === draft[sectionKey] && !canViewSection(section, role, data.sections)).map((section) => <option value={section.id} key={section.id}>{section.name} · Oculta para este rol</option>)}{sectionsFor(role).map((section) => <option value={section.id} key={section.id}>{getSectionLabel(section, data.sections)}</option>)}</select></div><label className={`role-lock-toggle ${draft[lockedKey] ? 'is-locked' : ''}`}><input type="checkbox" checked={draft[lockedKey]} onChange={(event) => setDraft({ ...draft, [lockedKey]: event.target.checked })} /><span><LockKeyhole size={15} /></span><div><strong>Mostrar como bloqueado</strong><small>Verá la tarjeta, pero no podrá reproducir el video.</small></div><i /></label></>}
                     {enabled && <div className="form-group learning-requirement"><label htmlFor={'prerequisite-' + role}>Video previo obligatorio</label><select id={'prerequisite-' + role} value={draft[prerequisiteKey] || ''} onChange={(event) => setDraft({ ...draft, [prerequisiteKey]: event.target.value })}><option value="">Sin requisito · video independiente</option>{previousVideos.map((video) => <option value={video.id} key={video.id}>{video.title}</option>)}</select><small>Para desbloquear este video hay que completar el anterior y aprobar su cuestionario. Solo aparecen videos con cuestionario y reproducción verificable.</small>{draft[lockedKey] && <small>El bloqueo manual seguirá activo aunque se complete el requisito.</small>}</div>}
                   </div>
                 )
@@ -2451,7 +2475,7 @@ function useRoleContentSelection({ data, role, selectedDocument, setSelectedDocu
   }, [data.documents, data.sections, role, selectedDocument, setSelectedDocument])
 
   useEffect(() => {
-    if (activeSection !== 'home' && !data.sections.some((section) => section.id === activeSection && canViewSection(section, role))) {
+    if (activeSection !== 'home' && !data.sections.some((section) => section.id === activeSection && canViewSection(section, role, data.sections))) {
       setActiveSection('home')
     }
   }, [activeSection, data.sections, role, setActiveSection])
@@ -2475,7 +2499,7 @@ function RolePreview({ data }) {
       setSelectedVideo(freshVideo)
     }
   }, [previewVideos, data.sections, role, selectedVideo])
-  const sections = useMemo(() => [...data.sections].filter((section) => canViewSection(section, role)).sort((a, b) => a.order - b.order), [data.sections, role])
+  const sections = useMemo(() => getSectionTree(data.sections.filter((section) => canViewSection(section, role, data.sections))), [data.sections, role])
   const videos = previewVideos.filter((video) => canViewVideo(video, role, data.sections))
   const documents = (data.documents || []).filter((document) => canViewDocument(document, role, data.sections))
   const blockedVideos = videos.filter((video) => isVideoLockedFor(video, role))
@@ -2531,7 +2555,7 @@ function RolePreview({ data }) {
               <small className="sidebar-label">EXPLORAR</small>
               <button className={activeSection === 'home' ? 'active' : ''} onClick={() => navigate('home')}><Home size={18} /><span>Inicio</span></button>
               <small className="sidebar-label sidebar-label--spaced">MI CONTENIDO</small>
-              {sections.map((section) => { const Icon = ICONS[section.icon] || Layers3; const count = documents.filter((document) => document.sectionId === section.id).length + videos.filter((video) => videoBelongsToSection(video, role, section.id)).length; return <button className={activeSection === section.id ? 'active' : ''} onClick={() => navigate(section.id)} key={section.id}><Icon size={18} /><span>{section.name}</span><small>{count}</small></button> })}
+              {sections.map((section) => { const Icon = section.parentId ? Folder : ICONS[section.icon] || Layers3; const count = documents.filter((document) => document.sectionId === section.id).length + videos.filter((video) => videoBelongsToSection(video, role, section.id)).length; return <button style={section.parentId ? { paddingLeft: 28 } : undefined} className={activeSection === section.id ? 'active' : ''} onClick={() => navigate(section.id)} key={section.id}><Icon size={18} /><span>{section.name}</span><small>{count}</small></button> })}
             </nav>
             <div className="sidebar-help"><span><CircleHelp size={16} /></span><div><strong>¿Necesitas ayuda?</strong><small>{data.settings?.supportMessage || 'Contacta a tu administrador'}</small></div></div>
             <div className="role-preview-sidebar-foot"><Eye size={15} /> Vista simulada</div>
@@ -2551,7 +2575,7 @@ function RolePreview({ data }) {
               ) : activeSection === 'home' && !query ? (
                 <ViewerHome role={role} settings={data.settings} videos={videos} documents={documents} sections={sections} featured={featured} lockedCount={blockedVideos.length} onPlay={openVideo} onSection={navigate} />
               ) : (
-                <SectionMediaListing key={activeSection} role={role} title={activeSection === 'home' ? 'Resultados de búsqueda' : activeSectionData?.name || 'Archivos'} subtitle={query ? `Resultados para “${query}”` : 'Contenido seleccionado para este perfil'} videos={filtered} documents={filteredDocuments} onPlay={openVideo} onOpenDocument={setSelectedDocument} />
+                <SectionMediaListing key={activeSection} role={role} title={activeSection === 'home' ? 'Resultados de búsqueda' : getSectionLabel(activeSectionData, data.sections) || 'Archivos'} subtitle={query ? `Resultados para “${query}”` : 'Contenido seleccionado para este perfil'} videos={filtered} documents={filteredDocuments} folders={sections.filter((section) => section.parentId === activeSection)} onFolder={navigate} parentSection={sections.find((section) => section.id === activeSectionData?.parentId)} onPlay={openVideo} onOpenDocument={setSelectedDocument} />
               )}
             </main>
           </section>
@@ -2564,7 +2588,7 @@ function RolePreview({ data }) {
 
 function ViewerApp({ role, userId, data, theme, toggleTheme, onLogout, onRefresh }) {
   const [completedVideoIds, setCompletedVideoIds] = useState(() => new Set())
-  const sections = useMemo(() => [...data.sections].filter((section) => canViewSection(section, role)).sort((a, b) => a.order - b.order), [data.sections, role])
+  const sections = useMemo(() => getSectionTree(data.sections.filter((section) => canViewSection(section, role, data.sections))), [data.sections, role])
   const targetedVideos = useMemo(() => {
     return data.videos
       .filter((video) => canViewVideo(video, role, sections))
@@ -2652,7 +2676,7 @@ function ViewerApp({ role, userId, data, theme, toggleTheme, onLogout, onRefresh
           <small className="sidebar-label">EXPLORAR</small>
           <button className={activeSection === 'home' ? 'active' : ''} onClick={() => navigate('home')} title={sidebarCollapsed ? 'Inicio' : undefined}><Home size={19} /><span>Inicio</span></button>
           <small className="sidebar-label sidebar-label--spaced">MI CONTENIDO</small>
-          {sections.map((section) => { const Icon = ICONS[section.icon] || Layers3; const count = targetedDocuments.filter((document) => document.sectionId === section.id).length + targetedVideos.filter((video) => videoBelongsToSection(video, role, section.id)).length; return <button className={activeSection === section.id ? 'active' : ''} onClick={() => navigate(section.id)} title={sidebarCollapsed ? section.name : undefined} key={section.id}><Icon size={19} /><span>{section.name}</span><small>{count}</small></button> })}
+          {sections.map((section) => { const Icon = section.parentId ? Folder : ICONS[section.icon] || Layers3; const count = targetedDocuments.filter((document) => document.sectionId === section.id).length + targetedVideos.filter((video) => videoBelongsToSection(video, role, section.id)).length; return <button style={section.parentId ? { paddingLeft: 28 } : undefined} className={activeSection === section.id ? 'active' : ''} onClick={() => navigate(section.id)} title={sidebarCollapsed ? getSectionLabel(section, data.sections) : undefined} key={section.id}><Icon size={19} /><span>{section.name}</span><small>{count}</small></button> })}
         </nav>
         <div className="sidebar-help"><span><CircleHelp size={17} /></span><div><strong>¿Necesitas ayuda?</strong><small>{data.settings?.supportMessage || 'Contacta a tu administrador'}</small></div></div>
         <div className="sidebar__bottom">{data.settings?.allowLightMode !== false && <ThemeToggle theme={theme} onToggle={toggleTheme} />}<button className="sidebar-action" onClick={onLogout} title={sidebarCollapsed ? 'Cerrar sesión' : undefined}><LogOut size={18} /><span>Cerrar sesión</span></button></div>
@@ -2673,7 +2697,7 @@ function ViewerApp({ role, userId, data, theme, toggleTheme, onLogout, onRefresh
           ) : activeSection === 'home' && !query ? (
             <ViewerHome role={role} settings={data.settings} videos={targetedVideos} documents={targetedDocuments} sections={sections} featured={featured} lockedCount={lockedCount} onPlay={openVideo} onSection={navigate} />
           ) : (
-            <SectionMediaListing key={activeSection} role={role} title={activeSection === 'home' ? 'Resultados de búsqueda' : activeSectionData?.name || 'Archivos'} subtitle={query ? `Resultados para “${query}”` : 'Contenido seleccionado para tu perfil'} videos={filtered} documents={filteredDocuments} onPlay={openVideo} onOpenDocument={openDocument} />
+            <SectionMediaListing key={activeSection} role={role} title={activeSection === 'home' ? 'Resultados de búsqueda' : getSectionLabel(activeSectionData, data.sections) || 'Archivos'} subtitle={query ? `Resultados para “${query}”` : 'Contenido seleccionado para tu perfil'} videos={filtered} documents={filteredDocuments} folders={sections.filter((section) => section.parentId === activeSection)} onFolder={navigate} parentSection={sections.find((section) => section.id === activeSectionData?.parentId)} onPlay={openVideo} onOpenDocument={openDocument} />
           )}
         </main>
       </section>
@@ -2698,16 +2722,18 @@ function ViewerHome({ role, settings, videos, documents, sections, featured, loc
       <div className="viewer-section-heading"><div><span className="eyebrow eyebrow--plain">RECIENTES</span><h2>Continúa explorando</h2></div><span>{availableCount} disponibles{lockedCount ? ` · ${lockedCount} bloqueados` : ''}</span></div>
       <div className="viewer-video-grid">{recent.slice(0, 6).map((video) => <ViewerVideoCard role={role} video={video} section={sections.find((item) => videoBelongsToSection(video, role, item.id))} onPlay={() => onPlay(video)} key={video.id} />)}</div>
       {!videos.length && !documents.length && <EmptyState icon={Film} title="Todavía no hay contenido" text="El administrador aún no ha habilitado archivos para tu perfil." />}
-      <section className="category-strip"><div className="viewer-section-heading"><div><span className="eyebrow eyebrow--plain">SECCIONES</span><h2>Explora por categoría</h2></div></div><div className="category-grid">{sections.map((section) => { const Icon = ICONS[section.icon] || Layers3; const videoCount = videos.filter((video) => videoBelongsToSection(video, role, section.id)).length; const documentCount = documents.filter((document) => document.sectionId === section.id).length; return <button onClick={() => onSection(section.id)} key={section.id}><span><Icon size={20} /></span><div><strong>{section.name}</strong><small>{videoCount} videos · {documentCount} documentos</small></div><ChevronRight size={17} /></button> })}</div></section>
+      <section className="category-strip"><div className="viewer-section-heading"><div><span className="eyebrow eyebrow--plain">SECCIONES</span><h2>Explora por categoría</h2></div></div><div className="category-grid">{sections.filter((section) => !section.parentId).map((section) => { const Icon = section.parentId ? Folder : ICONS[section.icon] || Layers3; const videoCount = videos.filter((video) => videoBelongsToSection(video, role, section.id)).length; const documentCount = documents.filter((document) => document.sectionId === section.id).length; return <button onClick={() => onSection(section.id)} key={section.id}><span><Icon size={20} /></span><div><strong>{section.name}</strong><small>{videoCount} videos · {documentCount} documentos · {sections.filter((item) => item.parentId === section.id).length} carpetas</small></div><ChevronRight size={17} /></button> })}</div></section>
       {lockedCount > 0 && <div className="locked-notice"><LockKeyhole size={18} /><div><strong>Contenido bloqueado por el administrador</strong><p>{lockedCount} {lockedCount === 1 ? 'video aparece bloqueado' : 'videos aparecen bloqueados'} en tu biblioteca. Puedes identificarlos, pero no abrirlos ni reproducirlos.</p></div></div>}
     </div>
   )
 }
 
-function SectionMediaListing({ role, title, subtitle, videos, documents, onPlay, onOpenDocument }) {
+function SectionMediaListing({ role, title, subtitle, videos, documents, onPlay, onOpenDocument, folders = [], onFolder, parentSection }) {
   const [tab, setTab] = useState(documents.length && !videos.length ? 'documents' : 'videos')
   return (
     <div>
+      {parentSection && <button type="button" className="secondary-button section-folder-back" onClick={() => onFolder(parentSection.id)}><ArrowLeft size={16} /> Volver a {parentSection.name}</button>}
+      {folders.length > 0 && <section className="viewer-folder-list"><h2>Carpetas de {title}</h2><div className="section-folder-grid">{folders.map((folder) => <button type="button" className="viewer-folder-card" onClick={() => onFolder(folder.id)} key={folder.id}><Folder size={25} /><strong>{folder.name}</strong><ChevronRight size={16} /></button>)}</div></section>}
       <div className="section-content-tabs viewer-media-tabs" role="tablist" aria-label="Contenido de la sección">
         <button type="button" role="tab" aria-selected={tab === 'videos'} className={tab === 'videos' ? 'active' : ''} onClick={() => setTab('videos')}><Video size={16} /> Videos <span>{videos.length}</span></button>
         <button type="button" role="tab" aria-selected={tab === 'documents'} className={tab === 'documents' ? 'active' : ''} onClick={() => setTab('documents')}><FileText size={16} /> Documentos <span>{documents.length}</span></button>

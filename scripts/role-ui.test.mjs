@@ -60,4 +60,9 @@ test('las pantallas y sus selectores contemplan los cinco roles', async (t) => {
   assert.equal(prepared.assignmentRows.find((row) => row.role === 'admin').is_locked, false)
   assert.equal(prepared.assignmentRows.find((row) => row.role === 'admin').prerequisite_video_id, null)
   assert.equal(prepared.assignmentRows.find((row) => row.role === 'salesperson').is_locked, true)
+  const folderId = '20000000-0000-4000-8000-000000000002'
+  const withFolder = prepareSnapshot({ ...snapshot, sections: [...snapshot.sections, { id: folderId, parentId: sectionId, name: 'Manuales', roles: ['salesperson'] }] }, '10000000-0000-4000-8000-000000000001', [])
+  assert.equal(withFolder.sectionRows.find((row) => row.id === folderId).parent_id, sectionId)
+  assert.equal(withFolder.sectionRows.find((row) => row.id === sectionId).parent_id, null)
+  assert.throws(() => prepareSnapshot({ ...snapshot, sections: [{ id: folderId, parentId: sectionId, name: 'Huérfana' }] }, '10000000-0000-4000-8000-000000000001', []), /sección principal existente/)
 })

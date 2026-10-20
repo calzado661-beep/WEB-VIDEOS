@@ -11,7 +11,7 @@ alter table public.section_documents add constraint section_documents_audience_c
     audience = 'both'
     or (
       audience <> ''
-      and string_to_array(audience, ',') <@ array['admin', 'operator', 'boss', 'salesperson', 'management']::text[]
+      and string_to_array(audience, ',') <@ enum_range(null::public.app_role)::text[]
     )
   );
 

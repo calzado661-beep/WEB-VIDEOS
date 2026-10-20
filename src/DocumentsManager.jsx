@@ -3,6 +3,7 @@ import { getDocumentAudienceLabel } from './documentAudience.js'
 import DocumentAudienceSelect from './DocumentAudienceSelect'
 import { createDocumentUploads, uploadDocumentBatch } from './documentUploads.js'
 import { VIEWER_ROLES } from './data.js'
+import { getSectionLabel, getSectionTree } from './sectionFolders.js'
 import { AdminAccessNotice, RoleOptions } from './RoleOptions'
 import { canViewDocument, normalizeSearch } from './roleAccess.js'
 import { Check, FileText, Pencil, Search, ShieldCheck, Trash2, UploadCloud, X } from 'lucide-react'
@@ -11,6 +12,7 @@ import {
   updateSectionDocumentAudience,
   updateSectionDocumentTitle,
   uploadSectionDocument,
+  moveSectionDocument,
 } from './lib/videoHubApi'
 
 const errorMessage = (error, fallback) => error instanceof Error && error.message ? error.message : fallback
@@ -26,8 +28,7 @@ function EmptyDocuments({ title, text }) {
 }
 
 export default function DocumentsManager({ data, setData, onNotify, sectionId = null, uploadsEnabled = true }) {
-  const documentSections = [...data.sections]
-    .sort((a, b) => a.order - b.order)
+  const documentSections = getSectionTree(data.sections)
   const [draft, setDraft] = useState({ sectionId: sectionId || documentSections[0]?.id || '', audience: 'both', files: [] })
   const [uploading, setUploading] = useState(false)
   const [uploadProgress, setUploadProgress] = useState('')
@@ -142,6 +143,18 @@ export default function DocumentsManager({ data, setData, onNotify, sectionId = 
     }
   }
 
+  const moveDocument = async (document, targetSectionId) => {
+    if (!uploadsEnabled || busyId || uploading || document.sectionId === targetSectionId) return
+    setBusyId(document.id)
+    try {
+      const updated = await moveSectionDocument(document.id, targetSectionId)
+      setData((current) => ({ ...current, documents: (current.documents || []).map((item) => item.id === document.id ? updated : item) }))
+      onNotify?.('Documento movido correctamente. Se aplican los permisos de su nueva ubicación.')
+    } catch (error) {
+      onNotify?.(errorMessage(error, 'No se pudo mover el documento.'), { tone: 'danger' })
+    } finally { setBusyId(null) }
+  }
+
   const documents = [...(data.documents || [])]
     .filter((document) => !sectionId || document.sectionId === sectionId)
     .filter((document) => normalizeSearch(document.title + ' ' + document.fileName).includes(normalizeSearch(query)))
@@ -154,7 +167,7 @@ export default function DocumentsManager({ data, setData, onNotify, sectionId = 
         <div className="manager-toolbar"><div><h2>Subir documentos</h2><p>Selecciona varios archivos PDF, DOC o DOCX. Máximo 25 MB por archivo.</p></div><span className="document-security-badge"><ShieldCheck size={15} /> Almacenamiento privado</span></div>
         {documentSections.length ? (
           <form className="document-upload-form" onSubmit={submitDocument}>
-            {!sectionId && <div className="form-group"><label>Sección</label><select value={draft.sectionId} disabled={uploading} onChange={(event) => setDraft({ ...draft, sectionId: event.target.value })}>{documentSections.map((section) => <option value={section.id} key={section.id}>{section.name}</option>)}</select></div>}
+            {!sectionId && <div className="form-group"><label>Sección</label><select value={draft.sectionId} disabled={uploading} onChange={(event) => setDraft({ ...draft, sectionId: event.target.value })}>{documentSections.map((section) => <option value={section.id} key={section.id}>{getSectionLabel(section, data.sections)}</option>)}</select></div>}
             <div className="form-group"><label htmlFor="document-audience">Visible para</label><DocumentAudienceSelect id="document-audience" value={draft.audience} onChange={(audience) => setDraft((current) => ({ ...current, audience }))} disabled={uploading} /><small>Los roles seleccionados también necesitan tener visible la sección. El rol Administradores solo permite consultar contenido.</small></div>
             <div className={`document-file-dropzone${draggingFiles ? ' is-dragging' : ''}`} onDragOver={(event) => {
               event.preventDefault()
@@ -199,10 +212,11 @@ export default function DocumentsManager({ data, setData, onNotify, sectionId = 
               <article className="document-admin-card" key={document.id}>
                 <div className="document-admin-card__icon"><FileText size={25} /><span>{typeLabel}</span></div>
                 <div className="document-admin-card__body">
-                  <small>{section?.name || 'Sección'} · {formatFileSize(document.fileSize)}</small>
+                  <small>{getSectionLabel(section, data.sections) || 'Sección'} · {formatFileSize(document.fileSize)}</small>
                   {editingId === document.id ? <div className="document-title-edit"><input value={editingTitle} maxLength="180" onChange={(event) => setEditingTitle(event.target.value)} autoFocus /><button type="button" onClick={() => saveTitle(document)} disabled={busyId === document.id}><Check size={15} /></button><button type="button" onClick={() => setEditingId(null)}><X size={15} /></button></div> : <h3>{document.title}</h3>}
                   <p>{document.fileName}</p>
                   <div className="document-audience-control"><span>Visible para</span><DocumentAudienceSelect value={document.audience || 'both'} onChange={(audience) => changeAudience(document, audience)} disabled={Boolean(busyId)} label={'Visibilidad de ' + document.title} /></div>
+                  <label className="document-audience-control">Ubicación <select value={document.sectionId} disabled={!uploadsEnabled || Boolean(busyId) || uploading} onChange={(event) => moveDocument(document, event.target.value)} aria-label={`Mover ${document.title}`}>{documentSections.map((location) => <option key={location.id} value={location.id}>{getSectionLabel(location, data.sections)}</option>)}</select></label>
                 </div>
                 <div className="document-admin-card__actions"><button type="button" onClick={() => { setEditingId(document.id); setEditingTitle(document.title) }} disabled={Boolean(busyId)}><Pencil size={15} /> Editar título</button><button type="button" className="danger" onClick={() => removeDocument(document)} disabled={Boolean(busyId)}><Trash2 size={15} /> Eliminar</button></div>
               </article>

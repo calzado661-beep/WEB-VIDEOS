@@ -1,4 +1,5 @@
 import { VIEWER_ROLES } from './data.js'
+import { canViewSection } from './roleAccess.js'
 
 export const DEFAULT_QUIZ_ATTEMPTS = 3
 
@@ -14,7 +15,7 @@ export function getQuizAttemptState(quiz, result) {
 // progress skip an incomplete ancestor. Missing content fails closed.
 export function getLearningBlockReason(video, role, videos, sections) {
   const byId = new Map(videos.map((item) => [item.id, item]))
-  const visibleSections = new Set(sections.filter((section) => section.roles.includes(role)).map((section) => section.id))
+  const visibleSections = new Set(sections.filter((section) => canViewSection(section, role, sections)).map((section) => section.id))
   const seen = new Set([video.id])
   let previousId = video.prerequisites?.[role]
   while (previousId) {

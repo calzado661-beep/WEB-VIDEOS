@@ -4,6 +4,7 @@ import { isSupabaseConfigured, supabase } from './supabase'
 
 import { USER_ROLES, VIEWER_ROLES } from '../data.js'
 import { isDocumentAudience } from '../documentAudience.js'
+import { validateSectionFolders } from '../sectionFolders.js'
 import { getRoleSchemaIssue } from '../roleErrors.js'
 const DATABASE_PROVIDERS = new Set([
   'youtube',
@@ -759,6 +760,16 @@ export async function updateSectionDocumentAudience(documentId, audience) {
   return mapDocumentRow(data)
 }
 
+export async function moveSectionDocument(documentId, sectionId) {
+  if (!isUuid(documentId) || !isUuid(sectionId)) throw new VideoHubApiError('Selecciona una ubicación válida.', { code: 'INVALID_DOCUMENT_LOCATION' })
+  const context = await getCurrentAccessContext()
+  if (context.role !== 'admin') throw new VideoHubApiError('Solo el administrador de la página puede mover documentos.', { code: 'DOCUMENT_MOVE_FORBIDDEN' })
+  const { data, error } = await getClient().from('section_documents').update({ section_id: sectionId }).eq('id', documentId).eq('organization_id', context.organizationId)
+    .select('id,organization_id,section_id,audience,title,file_name,mime_type,file_size,storage_bucket,storage_object_path,sort_order,created_at').single()
+  throwDatabaseError(error, 'No se pudo mover el documento')
+  return mapDocumentRow(data)
+}
+
 export async function deleteSectionDocument(document) {
   if (!isUuid(document?.id) || !document.storageBucket || !document.storageObjectPath) {
     throw new VideoHubApiError('El documento no es válido.', { code: 'INVALID_DOCUMENT' })
@@ -796,6 +807,7 @@ export async function getSectionDocumentViewUrl(document) {
  */
 export async function loadVideoHubSnapshot(options = {}) {
   const client = getClient()
+  let supportsFolders = true
   const context = options.context || await getCurrentAccessContext()
   const organizationId = context.organizationId
   const previousVideoById = new Map(
@@ -805,7 +817,7 @@ export async function loadVideoHubSnapshot(options = {}) {
   const [organizationResult, settingsResult, sectionsResult, rolesResult, videosResult, assignmentsResult, quizzesResult, myProgressResult, myQuizResultsResult, sectionContentResult, documentsResult, myProfileResult] = await Promise.all([
     client.from('organizations').select('id,name,slug,logo_url').eq('id', organizationId).single(),
     client.from('app_settings').select('product_name,welcome_title,welcome_message,support_message,allow_light_mode,require_quiz_photo').eq('organization_id', organizationId).maybeSingle(),
-    client.from('sections').select('id,name,slug,icon,sort_order,created_at').eq('organization_id', organizationId).eq('active', true).order('sort_order'),
+    client.from('sections').select('id,name,slug,icon,sort_order,created_at,parent_id').eq('organization_id', organizationId).eq('active', true).order('sort_order'),
     client.from('section_roles').select('section_id,role,visible').eq('organization_id', organizationId),
     client.from('videos').select('id,title,description,duration_label,duration_seconds,featured,created_at').eq('organization_id', organizationId).eq('active', true).order('created_at', { ascending: false }),
     client.from('video_assignments').select('video_id,role,section_id,visible,is_locked,prerequisite_video_id,sort_order').eq('organization_id', organizationId),
@@ -817,6 +829,10 @@ export async function loadVideoHubSnapshot(options = {}) {
     client.from('profiles').select('require_quiz_photo_override').eq('user_id', context.userId).single(),
   ])
 
+  if (sectionsResult.error && /parent_id/i.test(sectionsResult.error.message || '') && ['42703', 'PGRST204'].includes(sectionsResult.error.code)) {
+    supportsFolders = false
+    Object.assign(sectionsResult, await client.from('sections').select('id,name,slug,icon,sort_order,created_at').eq('organization_id', organizationId).eq('active', true).order('sort_order'))
+  }
   throwDatabaseError(organizationResult.error, 'No se pudo leer la organización')
   throwDatabaseError(settingsResult.error, 'No se pudo leer la configuración')
   throwDatabaseError(myProfileResult.error, 'No se pudo leer la configuración personal')
@@ -866,6 +882,7 @@ export async function loadVideoHubSnapshot(options = {}) {
 
   const sections = sectionRows.map((section) => ({
     id: section.id,
+    parentId: section.parent_id || null,
     name: section.name,
     slug: section.slug,
     icon: section.icon,
@@ -934,6 +951,7 @@ export async function loadVideoHubSnapshot(options = {}) {
 
   return {
     organization: organizationResult.data?.name || context.organization || '',
+    supportsFolders,
     organizationId,
     revision: Number.isSafeInteger(Number(context.contentRevision))
       ? Number(context.contentRevision)
@@ -953,6 +971,8 @@ export async function loadVideoHubSnapshot(options = {}) {
 }
 
 export function prepareSnapshot(snapshot, organizationId, existingSections) {
+  const folderError = validateSectionFolders(snapshot?.sections || [])
+  if (folderError) throw new VideoHubApiError(folderError, { code: 'INVALID_SECTION_FOLDER' })
   const sequenceError = validateLearningSequence(snapshot?.videos || [], snapshot?.sections || [])
   if (sequenceError) throw new VideoHubApiError(sequenceError, { code: 'INVALID_LEARNING_SEQUENCE' })
   if (!Array.isArray(snapshot?.sections) || !Array.isArray(snapshot?.videos)) {
@@ -1006,6 +1026,7 @@ export function prepareSnapshot(snapshot, organizationId, existingSections) {
       id,
       organization_id: organizationId,
       name,
+      parent_id: section.parentId ? sectionIdMap.get(String(section.parentId)) : null,
       slug,
       icon: String(section.icon || 'layers').trim() || 'layers',
       sort_order: Number.isInteger(section.order) && section.order >= 0 ? section.order : index,

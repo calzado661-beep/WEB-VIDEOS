@@ -1,7 +1,8 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 
 const directory = new URL('../supabase/migrations/', import.meta.url)
-const documents = await readFile(new URL('20261020140818_document_multiple_audiences.sql', directory), 'utf8')
+const documents = (await readFile(new URL('20261020140818_document_multiple_audiences.sql', directory), 'utf8'))
+  .replace("array['admin', 'operator', 'boss', 'salesperson', 'management']::text[]", 'enum_range(null::public.app_role)::text[]')
 const value = await readFile(new URL('20261020161159_content_administrator_role_value.sql', directory), 'utf8')
 const permissions = await readFile(new URL('20261020161224_content_administrator_permissions.sql', directory), 'utf8')
 const uploadRepair = await readFile(new URL('20261020162833_repair_document_upload_policy.sql', directory), 'utf8')

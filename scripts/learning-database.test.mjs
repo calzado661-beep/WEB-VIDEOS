@@ -44,6 +44,7 @@ test('secuencias e intentos en PostgreSQL', async (t) => {
     '20261020161159_content_administrator_role_value.sql',
     '20261020161224_content_administrator_permissions.sql',
     '20261020162833_repair_document_upload_policy.sql',
+    '20261020203001_section_subfolders.sql',
   ]
   for (const name of migrations) {
     const sql = (await readFile(new URL('../supabase/migrations/' + name, import.meta.url), 'utf8'))
@@ -91,6 +92,95 @@ test('secuencias e intentos en PostgreSQL', async (t) => {
   const subtest = async (name, fn) => t.test(name, async () => {
     await db.exec('begin')
     try { await fn() } finally { await db.exec('rollback; reset role') }
+  })
+
+  await subtest('el SQL manual se puede repetir conservando carpetas, documentos y roles existentes', async () => {
+    const folder = id(203), path = `${org}/${folder}/normal.pdf`
+    await query("insert into public.sections(id,organization_id,name,slug,parent_id) values ($1,$2,'Conservar carpeta','keep-folder',$3)", [folder, org, section])
+    await query(`insert into public.section_documents(organization_id,section_id,title,file_name,mime_type,file_size,storage_object_path,audience)
+      values ($1,$2,'Normal','normal.pdf','application/pdf',10,$3,'administrator')`, [org, folder, path])
+    await db.exec('set constraints all immediate')
+    const upgrade = (await readFile(new URL('../outputs/activate-section-folders.sql', import.meta.url), 'utf8')).replace(/^begin;\s*$/gm, '').replace(/^commit;\s*$/gm, '')
+    await db.exec(upgrade)
+    await db.exec(upgrade)
+    assert.equal((await query('select parent_id from public.sections where id=$1', [folder]))[0].parent_id, section)
+    assert.equal((await query('select audience from public.section_documents where storage_object_path=$1', [path]))[0].audience, 'administrator')
+    assert.equal((await query('select count(*)::int as count from public.section_roles where section_id=$1', [folder]))[0].count, USER_ROLES.length)
+  })
+
+  await subtest('guardar, editar y eliminar una carpeta conserva contenido y rechaza jerarquías inválidas', async () => {
+    await asUser(admin)
+    const folder = id(202), path = `${org}/${folder}/keep.pdf`
+    const snapshot = (await query(`select jsonb_build_object(
+      'organization','Demo',
+      'sections',(select jsonb_agg(to_jsonb(s)) from public.sections s where organization_id=$1),
+      'section_roles',(select jsonb_agg(to_jsonb(r)) from public.section_roles r where organization_id=$1),
+      'videos',(select jsonb_agg(to_jsonb(v)) from public.videos v where organization_id=$1),
+      'video_sources',(select jsonb_agg(to_jsonb(s)) from public.video_sources s),
+      'video_assignments',(select jsonb_agg(to_jsonb(a)) from public.video_assignments a where organization_id=$1)
+    ) as value`, [org]))[0].value
+    let revision = Number((await query('select content_revision from public.organizations where id=$1', [org]))[0].content_revision)
+    snapshot.sections.push({ id: folder, name: 'Nueva carpeta', slug: 'new-folder', parent_id: section, active: true })
+    snapshot.section_roles.push(...USER_ROLES.map((role) => ({ section_id: folder, role, visible: ['admin', 'operator'].includes(role) })))
+    snapshot.video_assignments.find((assignment) => assignment.video_id === first && assignment.role === 'operator').section_id = folder
+    revision = Number((await query('select public.save_admin_snapshot($1,$2) as revision', [JSON.stringify(snapshot), revision]))[0].revision)
+    assert.equal((await query('select parent_id from public.sections where id=$1', [folder]))[0].parent_id, section)
+    await query(`insert into public.section_documents(organization_id,section_id,title,file_name,mime_type,file_size,storage_object_path)
+      values ($1,$2,'Conservar','keep.pdf','application/pdf',10,$3)`, [org, folder, path])
+    await query("insert into storage.objects(bucket_id,name) values ('document-assets',$1)", [path])
+    snapshot.sections.find((item) => item.id === folder).name = 'Carpeta editada'
+    snapshot.section_roles.find((row) => row.section_id === folder && row.role === 'operator').visible = false
+    revision = Number((await query('select public.save_admin_snapshot($1,$2) as revision', [JSON.stringify(snapshot), revision]))[0].revision)
+    assert.equal((await query('select name from public.sections where id=$1', [folder]))[0].name, 'Carpeta editada')
+    await asUser(alice)
+    assert.equal((await query('select id from public.section_documents')).length, 0)
+    await asUser(admin)
+    const oldClient = { ...snapshot, sections: snapshot.sections.map(({ parent_id, ...rest }) => rest) }
+    await rejects('select public.save_admin_snapshot($1,$2)', [JSON.stringify(oldClient), revision], /FOLDER_CLIENT_REQUIRED/)
+    const invalid = structuredClone(snapshot)
+    invalid.sections.find((item) => item.id === section).parent_id = folder
+    await rejects('select public.save_admin_snapshot($1,$2)', [JSON.stringify(invalid), revision], /FOLDER_HIERARCHY_INVALID/)
+    assert.equal(Number((await query('select content_revision from public.organizations where id=$1', [org]))[0].content_revision), revision)
+    snapshot.sections = snapshot.sections.filter((item) => item.id !== folder)
+    snapshot.section_roles = snapshot.section_roles.filter((item) => item.section_id !== folder)
+    snapshot.video_assignments.forEach((item) => { if (item.section_id === folder) item.section_id = section })
+    await query('select public.save_admin_snapshot($1,$2)', [JSON.stringify(snapshot), revision])
+    const document = (await query('select section_id,storage_object_path from public.section_documents where storage_object_path=$1', [path]))[0]
+    assert.equal(document.section_id, section)
+    assert.equal(document.storage_object_path, path)
+    assert.equal((await query('select active from public.sections where id=$1', [folder]))[0].active, false)
+    await asUser(alice)
+    assert.equal((await query('select id from public.section_documents')).length, 1)
+    assert.equal((await query('select id from storage.objects where name=$1', [path])).length, 1)
+  })
+
+  await subtest('las carpetas heredan permisos de sección en videos, documentos y Storage', async () => {
+    const folder = id(201), path = `${org}/${folder}/manual.pdf`
+    await query("insert into public.sections(id,organization_id,name,slug,parent_id) values ($1,$2,'Carpeta','folder',$3)", [folder, org, section])
+    await query("update public.section_roles set visible=true where section_id=$1 and role in ('operator','management')", [folder])
+    await query("update public.video_assignments set section_id=$1 where video_id=$2 and role='operator'", [folder, first])
+    await query(`insert into public.section_documents(organization_id,section_id,title,file_name,mime_type,file_size,storage_object_path,audience)
+      values ($1,$2,'Manual','manual.pdf','application/pdf',10,$3,'both')`, [org, folder, path])
+    await query("insert into storage.objects(bucket_id,name) values ('document-assets',$1)", [path])
+    await asUser(alice)
+    assert.equal((await query('select id from public.sections where id=$1', [folder])).length, 1)
+    assert.equal(await playable(first), true)
+    assert.equal((await query('select id from public.section_documents')).length, 1)
+    await db.exec('reset role')
+    await query("update public.section_roles set visible=false where section_id=$1 and role='operator'", [section])
+    await asUser(alice)
+    assert.equal((await query('select id from public.sections where id=$1', [folder])).length, 0)
+    assert.equal((await query('select id from public.videos where id=$1', [first])).length, 0)
+    assert.equal((await query('select video_id from public.video_sources where video_id=$1', [first])).length, 0)
+    assert.equal(await playable(first), false)
+    assert.equal((await query('select id from public.section_documents')).length, 0)
+    assert.equal((await query('select id from storage.objects where name=$1', [path])).length, 0)
+    await asUser(boss)
+    assert.equal((await query('select id from public.sections where id=$1', [folder])).length, 0)
+    await asUser(outsider)
+    assert.equal((await query('select id from public.sections where id=$1', [folder])).length, 0)
+    await asUser(admin)
+    assert.equal((await query('select id from public.section_documents')).length, 1)
   })
 
   await subtest('una política antigua rechaza la subida en secciones mixtas y la reparación la permite', async () => {

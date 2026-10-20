@@ -21,6 +21,10 @@ La aplicación lee y guarda videos, secciones, configuración y permisos únicam
 
 ## Funciones incluidas
 
+Cada sección puede tener carpetas con nombre y permisos propios para videos y documentos. Se crean desde **Secciones → Archivos → Nueva carpeta**; allí puedes editar sus permisos, renombrarlas y abrirlas. Los selectores **Ubicación** permiten mover contenido. Eliminar una carpeta devuelve su contenido a la sección principal; no borra los archivos. Un rol necesita acceso a la sección, la carpeta y el contenido para verlo. Consulta [Carpetas y subsecciones](docs/SECTION_FOLDERS.md).
+
+Para activar esta función en Supabase, ejecuta `npm run prepare:folders-sql` y aplica `outputs/activate-section-folders.sql` en el SQL Editor, después de las migraciones operativas anteriores. Incluye las correcciones previas de roles y subida de documentos. Mientras falte la actualización, la aplicación conserva el acceso al contenido existente y deshabilita la creación de carpetas.
+
 Los selectores «Visible para» muestran únicamente los cinco roles de contenido. «Administradores» se puede marcar y desmarcar y no concede gestión de la página. El acceso de gestión conserva el identificador interno `admin`; el nuevo rol de contenido utiliza `administrator` y empieza sin asignaciones. No se cambian automáticamente las cuentas existentes. Para actualizar una base existente, ejecuta `npm run prepare:content-administrator-sql` y aplica `outputs/activate-content-administrator.sql` en el SQL Editor del proyecto configurado, después de las migraciones operativas anteriores. Ese archivo incluye la selección múltiple de documentos y conserva las cuentas y los permisos actuales.
 
 La subida admite seleccionar varios archivos con Ctrl/Shift o arrastrarlos a la zona de carga, con título independiente y límite de 25 MB por archivo. Se suben hasta tres documentos simultáneamente y el contador muestra los archivos procesados. Los archivos confirmados aparecen al terminar cada subida; si alguno falla, queda en la lista con su error para reintentarlo sin duplicar los que ya se guardaron.
