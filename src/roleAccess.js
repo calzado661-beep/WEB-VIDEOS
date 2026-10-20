@@ -1,4 +1,5 @@
 import { ROLE_META, VIEWER_ROLES, hasFullContentAccess } from './data.js'
+import { getDocumentAudienceRoles } from './documentAudience.js'
 
 // Presentation checks match the database rules; Supabase RLS remains authoritative.
 export function canViewSection(section, role) {
@@ -15,7 +16,7 @@ export function canViewVideo(video, role, sections) {
 export function canViewDocument(document, role, sections) {
   if (!ROLE_META[role] || !document || document.active === false) return false
   if (!sections.some((section) => section.id === document.sectionId && canViewSection(section, role))) return false
-  return hasFullContentAccess(role) || !document.audience || document.audience === 'both' || document.audience === role
+  return hasFullContentAccess(role) || getDocumentAudienceRoles(document.audience || 'both').includes(role)
 }
 
 export function videoBelongsToSection(video, role, sectionId) {

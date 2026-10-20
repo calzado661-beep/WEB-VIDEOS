@@ -2,7 +2,8 @@ import { getVideoSource, parseDurationSeconds } from '../videoUtils'
 import { withLearningAccess, validateLearningSequence } from '../learningRules'
 import { isSupabaseConfigured, supabase } from './supabase'
 
-import { DOCUMENT_AUDIENCES, USER_ROLES, VIEWER_ROLES } from '../data.js'
+import { USER_ROLES, VIEWER_ROLES } from '../data.js'
+import { isDocumentAudience } from '../documentAudience.js'
 import { getRoleSchemaIssue } from '../roleErrors.js'
 const DATABASE_PROVIDERS = new Set([
   'youtube',
@@ -665,7 +666,7 @@ export async function uploadSectionDocument({ organizationId, sectionId, title, 
       code: 'INVALID_DOCUMENT',
     })
   }
-  if (!DOCUMENT_AUDIENCES.includes(audience)) {
+  if (!isDocumentAudience(audience)) {
     throw new VideoHubApiError('Selecciona un rol válido para el documento.', { code: 'INVALID_DOCUMENT_AUDIENCE' })
   }
   if (!file || !mimeType) {
@@ -733,7 +734,7 @@ export async function updateSectionDocumentTitle(documentId, title) {
 }
 
 export async function updateSectionDocumentAudience(documentId, audience) {
-  if (!isUuid(documentId) || !DOCUMENT_AUDIENCES.includes(audience)) {
+  if (!isUuid(documentId) || !isDocumentAudience(audience)) {
     throw new VideoHubApiError('Selecciona un rol válido para el documento.', { code: 'INVALID_DOCUMENT_AUDIENCE' })
   }
   const { data, error } = await getClient()

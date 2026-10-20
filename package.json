@@ -8,6 +8,7 @@
     "build": "vite build",
     "test:autosave": "node --test scripts/admin-save-revision.test.mjs",
     "test:persistence": "node --test scripts/supabase-only-persistence.test.mjs",
+    "test:connection": "node --test scripts/connection-deadline.test.mjs",
     "test:drive-import": "node --test scripts/drive-import.test.mjs",
     "test:video-utils": "node --test scripts/video-utils.test.mjs",
     "test:learning": "node --test scripts/learning-rules.test.mjs scripts/learning-database.test.mjs",

@@ -40,6 +40,7 @@ test('secuencias e intentos en PostgreSQL', async (t) => {
     '20261019202553_operational_role_values.sql',
     '20261019202600_operational_role_permissions.sql',
     '20261019222833_operational_roles_consistency.sql',
+    '20261020140818_document_multiple_audiences.sql',
   ]
   for (const name of migrations) {
     const sql = (await readFile(new URL('../supabase/migrations/' + name, import.meta.url), 'utf8'))
@@ -123,6 +124,36 @@ test('secuencias e intentos en PostgreSQL', async (t) => {
     await asUser(admin)
     assert.equal((await query('select id from public.section_documents')).length, 1)
     assert.equal((await query("select id from storage.objects where name=$1", [path])).length, 1)
+  })
+
+  await subtest('las audiencias múltiples protegen documentos y Storage para cada rol', async () => {
+    const path = `${org}/${section}/multiple-roles.pdf`
+    await query("update public.section_roles set visible=true where section_id=$1", [section])
+    await query(`insert into public.section_documents(organization_id,section_id,title,file_name,mime_type,file_size,storage_object_path,audience)
+      values ($1,$2,'Compartido','multiple.pdf','application/pdf',10,$3,'operator,management')`, [org, section, path])
+    await query("insert into storage.objects(bucket_id,name) values ('document-assets',$1)", [path])
+    for (const role of VIEWER_ROLES) {
+      await query('update public.profiles set role=$1 where user_id=$2', [role, alice])
+      await asUser(alice)
+      const expected = ['operator', 'management'].includes(role) ? 1 : 0
+      assert.equal((await query('select id from public.section_documents')).length, expected, role)
+      assert.equal((await query('select id from storage.objects where name=$1', [path])).length, expected, role)
+      await db.exec('reset role')
+    }
+    await query("update public.section_roles set visible=false where section_id=$1 and role='management'", [section])
+    await asUser(alice)
+    assert.equal((await query('select id from public.section_documents')).length, 0)
+    assert.equal((await query('select id from storage.objects where name=$1', [path])).length, 0)
+    await asUser(admin)
+    assert.equal((await query('select id from public.section_documents')).length, 1)
+    assert.equal((await query('select id from storage.objects where name=$1', [path])).length, 1)
+    await asUser(outsider)
+    assert.equal((await query('select id from public.section_documents')).length, 0)
+    assert.equal((await query('select id from storage.objects where name=$1', [path])).length, 0)
+    await db.exec('reset role')
+    for (const audience of ['', 'operator,unknown', 'both,operator', 'operator,']) {
+      await rejects('update public.section_documents set audience=$1', [audience], /check constraint/)
+    }
   })
 
   await subtest('se pueden habilitar intentos para Administradores sin inventar asignaciones de contenido', async () => {

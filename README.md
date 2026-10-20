@@ -21,6 +21,8 @@ La aplicación lee y guarda videos, secciones, configuración y permisos únicam
 
 ## Funciones incluidas
 
+El selector «Visible para» de documentos permite marcar varios roles y confirmar con «Aplicar», tanto al subir como al editar. Los administradores conservan acceso automático. Para activar el guardado múltiple en una base existente, aplica `supabase/migrations/20261020140818_document_multiple_audiences.sql` en el SQL Editor del proyecto configurado; conserva los documentos y sus permisos actuales y actualiza también el acceso a los archivos privados.
+
 - Login con usuario y contraseña individuales por persona (Supabase Auth valida la contraseña).
 - Panel de administración para crear, editar y deshabilitar cuentas con cualquiera de los cinco roles. La cuenta del administrador conectado está protegida contra cambios desde este panel.
 - Opciones y filtros para los cinco roles en usuarios, contenido, vista previa, progreso y cuestionarios.

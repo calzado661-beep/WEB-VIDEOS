@@ -80,6 +80,7 @@ import {
   uploadQuizAttemptPhoto,
 } from './lib/videoHubApi'
 import { createAdminSaveRevisionTracker } from './lib/adminSaveRevision'
+import { withConnectionDeadline } from './lib/connectionDeadline.js'
 import { downloadUsersExcel } from './lib/exportUsersExcel'
 import DocumentsManager from './DocumentsManager'
 import QuizAttemptsManager from './QuizAttemptsManager'
@@ -253,8 +254,11 @@ function App() {
     setLoadError('')
 
     try {
-      const context = knownContext || await getCurrentAccessContext()
-      const snapshot = await loadVideoHubSnapshot({ context })
+      const { context, snapshot } = await withConnectionDeadline(async () => {
+        const context = knownContext || await getCurrentAccessContext()
+        const snapshot = await loadVideoHubSnapshot({ context })
+        return { context, snapshot }
+      }, 30_000, 'La carga de contenido tardó demasiado. Revisa tu conexión y pulsa Reintentar.')
       if (epoch !== loadEpochRef.current) return null
 
       contentRevisionTrackerRef.current.reset(snapshot.revision)
@@ -280,10 +284,13 @@ function App() {
   useEffect(() => {
     let active = true
 
-    getCurrentSession()
+    withConnectionDeadline(getCurrentSession, 20_000,
+      'No se pudo recuperar tu sesión a tiempo. Reintenta la conexión o vuelve a ingresar.')
       .then((currentSession) => {
         if (!active) return null
-        return hydrateSession(currentSession)
+        // Content errors are already handled by hydrateSession. Preserve the
+        // authenticated session so its error screen can retry the data load.
+        return hydrateSession(currentSession).catch(() => undefined)
       })
       .catch((error) => {
         if (!active) return
@@ -595,7 +602,7 @@ function App() {
   }
 
   if (!session) {
-    return <LoginScreen data={EMPTY_DATA} theme={theme} toggleTheme={toggleTheme} onLogin={loginWithCredentials} serviceError={loadError} />
+    return <LoginScreen data={EMPTY_DATA} theme={theme} toggleTheme={toggleTheme} onLogin={loginWithCredentials} serviceError={loadError} onRetryConnection={() => window.location.reload()} />
   }
 
   if (loadError || !data || !accessContext) {
@@ -770,7 +777,7 @@ function VideoThumbnail({ video, className = '' }) {
   return null
 }
 
-function LoginScreen({ data, theme, toggleTheme, onLogin, serviceError = '' }) {
+function LoginScreen({ data, theme, toggleTheme, onLogin, serviceError = '', onRetryConnection }) {
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [showPassword, setShowPassword] = useState(false)
@@ -863,7 +870,7 @@ function LoginScreen({ data, theme, toggleTheme, onLogin, serviceError = '' }) {
                 </button>
               </div>
               {error && <p className="form-error">{error}</p>}
-              {!error && serviceError && <p className="form-error">{serviceError}</p>}
+              {!error && serviceError && <div className="form-error"><p>{serviceError}</p>{onRetryConnection && <button className="secondary-button" type="button" onClick={onRetryConnection} disabled={loading}>Reintentar conexión</button>}</div>}
               <button className="primary-button primary-button--wide" type="submit" disabled={loading}>
                 <span>{loading ? 'Verificando…' : 'Ingresar a la plataforma'}</span>
                 {!loading && <ArrowRight size={18} />}

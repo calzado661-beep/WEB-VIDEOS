@@ -1,10 +1,25 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { USER_ROLES } from '../src/data.js'
+import { getDocumentAudienceLabel, isDocumentAudience, toggleDocumentAudienceRole } from '../src/documentAudience.js'
 import { canViewDocument, canViewSection, canViewVideo, isVideoLockedForRole, matchesUserSearch, videoBelongsToSection } from '../src/roleAccess.js'
 
 const sections = [{ id: 'sales', roles: ['salesperson'] }, { id: 'management', roles: ['management'] }]
 const video = { assignments: { salesperson: 'sales', management: 'management' }, locked: { salesperson: true } }
+
+test('los documentos admiten varios roles sin ampliar el acceso a otros roles', () => {
+  const allSections = [{ id: 'all', roles: USER_ROLES }]
+  const document = { sectionId: 'all', audience: 'operator,management' }
+  for (const role of USER_ROLES) assert.equal(canViewDocument(document, role, allSections), ['admin', 'operator', 'management'].includes(role))
+  assert.equal(canViewDocument(document, 'management', [{ id: 'all', roles: ['operator'] }]), false)
+  assert.equal(getDocumentAudienceLabel(document.audience), 'Operarios, Gerencia')
+  assert.equal(toggleDocumentAudienceRole('operator', 'management'), 'operator,management')
+  assert.equal(toggleDocumentAudienceRole('operator,management', 'operator'), 'management')
+  assert.equal(toggleDocumentAudienceRole('operator', 'operator'), 'admin')
+  assert.equal(toggleDocumentAudienceRole('both', 'boss'), 'operator,salesperson,management')
+  for (const value of ['both', 'admin', 'operator', 'operator,boss']) assert.equal(isDocumentAudience(value), true)
+  for (const value of ['', null, [], 'both,operator', 'operator,unknown', 'operator,']) assert.equal(isDocumentAudience(value), false)
+})
 
 test('los cinco roles tienen acceso coherente a secciones, videos y documentos', () => {
   for (const role of USER_ROLES) {
