@@ -36,11 +36,15 @@ test('las pantallas y sus selectores contemplan los cinco roles', async (t) => {
   }
   for (const name of [...names, 'DocumentsManager', 'QuizAttemptsManager']) {
     const html = renderToStaticMarkup(createElement(components[name], { data, setData() {}, saveState: { status: 'saved' }, persistedVideoIdsRef: { current: new Set(['v']) } }))
-    for (const role of USER_ROLES) assert.ok(html.includes(ROLE_META[role].label), `${name} debe mostrar ${role}`)
+    for (const role of name === 'SectionsManager' ? VIEWER_ROLES : USER_ROLES) assert.ok(html.includes(ROLE_META[role].label), `${name} debe mostrar ${role}`)
     if (name !== 'AdminOverview' && name !== 'SectionsManager') {
-      for (const role of USER_ROLES) assert.ok(html.includes(`<option value="${role}"`), `${name} debe incluir la opción ${role}`)
+      for (const role of name === 'DocumentsManager' ? VIEWER_ROLES : USER_ROLES) assert.ok(html.includes(`<option value="${role}"`), `${name} debe incluir la opción ${role}`)
     }
-    if (name === 'SectionsManager') assert.match(html, /disabled=""[^>]*title="Acceso total automático"/)
+    if (name === 'SectionsManager') {
+      assert.ok(!html.includes(ROLE_META.admin.label))
+      assert.match(html, /<button[^>]*aria-pressed="true"[^>]*><span>.*?<\/span>Administradores<\/button>/)
+      assert.doesNotMatch(html, /disabled=""[^>]*title="Acceso total automático"/)
+    }
   }
   const { prepareSnapshot } = await server.ssrLoadModule('/src/lib/videoHubApi.js')
   const sectionId = '20000000-0000-4000-8000-000000000001'

@@ -1,49 +1,43 @@
 # Roles y permisos
 
-El catálogo contiene exactamente cinco roles:
+Hay cinco roles de contenido y un acceso independiente para gestionar la página:
 
 | Rol | Identificador | Acceso |
 | --- | --- | --- |
-| Administradores | `admin` | Gestión de usuarios, contenido, permisos y configuración de su organización. |
-| Operarios | `operator` | Contenido autorizado para este rol. |
-| Jefes | `boss` | Contenido autorizado para este rol. |
-| Vendedores | `salesperson` | Contenido autorizado para este rol. |
-| Gerencia | `management` | Contenido autorizado para este rol. |
+| Administrador de la página | `admin` | Gestiona usuarios, contenido, permisos y configuración de su organización. |
+| Administradores | `administrator` | Solo el contenido asignado; no permite gestionar la página. |
+| Operarios | `operator` | Solo el contenido asignado. |
+| Jefes | `boss` | Solo el contenido asignado. |
+| Vendedores | `salesperson` | Solo el contenido asignado. |
+| Gerencia | `management` | Solo el contenido asignado; no permite gestionar la página. |
 
-Se conservan los identificadores `operator` y `boss` para mantener las cuentas y asignaciones existentes. Gerencia no otorga permisos de administración. Las áreas (Hogar, Tecnología, Almacén 1, etc.) y el cargo siguen siendo datos del perfil; no conceden permisos ni cambian automáticamente el rol.
+El rol Administradores es un título de usuario, igual que los otros roles de contenido. Se puede marcar y desmarcar en Secciones, asignar a videos y seleccionar para documentos. Necesita una sección visible, respeta bloqueos y requisitos de aprendizaje y no puede crear usuarios ni guardar configuraciones administrativas.
 
-En **Usuarios**, el administrador puede crear cuentas y cambiar su rol. La cuenta con la que ha iniciado sesión no se puede editar ni deshabilitar desde ese panel. Asignar **Administradores** concede acceso de gestión; el formulario lo indica explícitamente.
+El administrador de la página no aparece como una casilla de visibilidad. Conserva acceso de gestión automático para administrar el contenido. Las cuentas que ya tenían el identificador `admin` mantienen sus permisos; no se convierten automáticamente al nuevo rol de contenido. El cargo o área del perfil no concede permisos.
 
-Todas las opciones de rol se generan desde `src/data.js`: usuarios, secciones, videos, documentos, vista previa, progreso y cuestionarios muestran los cinco roles.
+En Usuarios, el selector distingue **Administradores** de **Administrador de la página** y explica sus permisos. La cuenta del administrador conectado no se puede modificar ni deshabilitar desde este panel. Los reportes y filtros de usuarios contemplan ambos accesos y los demás roles.
 
-En **Secciones**, Administradores aparece siempre habilitado. Los otros cuatro roles se activan de forma independiente. Una sección sin destinatarios adicionales queda reservada a administración.
-
-En **Videos**, Administradores tiene una sección de referencia para organizar el contenido, pero conserva acceso total a la biblioteca. Su acceso no admite bloqueo ni video previo obligatorio. Los otros cuatro roles tienen sección, bloqueo y requisitos propios. Si solo está habilitado Administradores, el video se muestra en el grupo **Solo Administradores**.
-
-En **Documentos**, se puede elegir cualquiera de los cinco roles o **Todos los roles de la sección**. **Solo Administradores** reserva el documento a administración y las políticas de Storage también lo protegen. Los otros destinatarios necesitan tener visible la sección.
-
-**Usuarios** incluye búsqueda, estado y filtro por los cinco roles. **Vista por rol** permite simularlos todos sin registrar avance. **Progreso** incluye Administradores, cuenta los videos asignados aunque estén bloqueados y aplica los filtros también a la gráfica. El Excel exporta los usuarios filtrados, conserva sus intentos anteriores y muestra el rol en sus cuatro hojas. La gestión de intentos también permite filtrar por cualquiera de los cinco roles.
+Los permisos de contenido se definen por separado para cada rol. Una sección desmarcada oculta también sus documentos y videos para ese rol. Los documentos permiten varios destinatarios y cada video tiene sus propias asignaciones, bloqueos y requisitos. Sin destinatarios, el contenido queda reservado al panel de gestión.
 
 ## Actualización de la base de datos
 
-Aplicar después de las migraciones anteriores y en este orden:
+Tras las migraciones operativas anteriores, aplicar en orden:
 
-1. `supabase/migrations/20261019202553_operational_role_values.sql`
-2. `supabase/migrations/20261019202600_operational_role_permissions.sql`
-3. `supabase/migrations/20261019222833_operational_roles_consistency.sql`
+1. `20261020140818_document_multiple_audiences.sql`
+2. `20261020161159_content_administrator_role_value.sql`
+3. `20261020161224_content_administrator_permissions.sql`
+4. `20261020162833_repair_document_upload_policy.sql`
 
-La primera agrega los valores al enum y debe finalizar su transacción antes de usarlos. La segunda amplía el esquema anterior a los cuatro roles de contenido. La tercera completa la representación de los cinco roles, conserva el acceso automático de Administradores, añade la audiencia administrativa para documentos y actualiza el guardado y la gestión de intentos.
+La adición al enum debe confirmarse en una transacción independiente antes de usar el nuevo valor. La última migración agrega filas ocultas para el rol nuevo sin cambiar las asignaciones existentes. No transforma usuarios ni les concede gestión. Las políticas RLS existentes siguen reservando la gestión al identificador `admin`.
 
-Para actualizar desde el SQL Editor sin Supabase CLI, ejecutar `npm run prepare:roles-sql`, abrir `outputs/activate-operational-roles.sql` y pegar todo el contenido en el SQL Editor del proyecto del portal. El archivo agrega los valores del enum en una transacción y aplica directamente la definición final en otra; esta reemplaza la definición intermedia, por lo que el archivo se puede repetir incluso después de haber activado los cinco roles. Este procedimiento manual no registra entradas en el historial de migraciones de la CLI.
+Para el SQL Editor, ejecutar `npm run prepare:content-administrator-sql` y pegar el contenido de `outputs/activate-content-administrator.sql`. El archivo mantiene el orden y las transacciones necesarias e incluye la actualización de selección múltiple. No registra entradas en el historial de migraciones de la CLI. Requiere las migraciones operativas de octubre de 2026 ya instaladas; para una base nueva, aplicar todas las migraciones en orden.
 
-Ejecutar `npm run check:supabase-schema` antes de desplegar. La comprobación verifica los valores del enum y la versión 3 de `get_role_configuration`, para detectar una actualización parcial aunque las tablas ya existan. La lectura de usuarios funciona con el esquema anterior. Crear o cambiar a un rol todavía no instalado devuelve `ROLE_SCHEMA_PENDING` antes de crear una cuenta Auth o modificar su contraseña.
+Ejecutar `npm run check:supabase-schema` antes de desplegar. Comprueba los valores esperados y la versión 4 de `get_role_configuration` para detectar una activación parcial. Crear o cambiar a un rol aún no instalado devuelve `ROLE_SCHEMA_PENDING` antes de crear cuentas Auth o modificar contraseñas.
 
-Las cuentas actuales, los permisos de los otros roles, bloqueos, requisitos y resultados se conservan. La sección de referencia administrativa se obtiene de las asignaciones existentes. Vendedores y Gerencia empiezan sin acceso al contenido; el administrador debe asignarles secciones y videos y seleccionar los usuarios que tendrán esos roles. No se promueve ninguna cuenta a Administradores a partir del texto de su cargo o área. El `seed.sql` de demostración contempla los cinco roles; no se aplica automáticamente sobre datos existentes.
+Desplegar el frontend y las funciones Netlify con la actualización. Después de aplicarla, recargar las sesiones de gestión abiertas: el guardado exige las seis filas de rol por sección y rechaza los clientes anteriores para evitar que borren nuevas asignaciones.
 
-Desplegar el frontend y las funciones Netlify junto con esta actualización. Tras la migración, recargar las sesiones administrativas que estaban abiertas: el guardado exige las cinco filas de rol por sección y rechaza vistas anteriores de dos o cuatro roles para impedir que borren nuevas asignaciones.
+## Validación
 
-## Validación local
+`npm run test:roles` comprueba selectores, creación de cuentas, serialización, compatibilidad con esquemas anteriores, permisos y reportes. `npm run test:learning` ejecuta las migraciones en PostgreSQL mediante PGlite y verifica RLS, aislamiento entre roles y organizaciones, Storage, cuestionarios, progreso y guardado atómico. Incluye una comprobación específica de que `administrator` no obtiene permisos de gestión.
 
-`npm run test:roles` verifica compatibilidad con el esquema anterior, creación y edición de los cinco roles, autorización administrativa, selectores de las pantallas, serialización, permisos compartidos y reportes filtrados.
-
-`npm run test:learning` ejecuta las migraciones en PostgreSQL mediante PGlite y comprueba aislamiento entre roles y organizaciones, documentos y videos exclusivos de administración, Storage, progreso, cuestionarios, requisitos, actualización repetible y guardado atómico. `npm run test:drive-import` verifica que importar desde Drive conserve los cinco roles, los requisitos y la configuración de foto.
+`npm run test:documents` verifica la carga de varios archivos y el reintento de fallos sin duplicar documentos confirmados. `npm run test:drive-import` comprueba que importar desde Drive conserva las asignaciones de los roles.

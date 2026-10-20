@@ -1,6 +1,6 @@
 # Aurea Video Hub
 
-Portal privado de videos creado con React + Vite. Incluye cinco roles: Administradores, Operarios, Jefes, Vendedores y Gerencia.
+Portal privado de videos creado con React + Vite. Incluye cinco roles de contenido: Administradores, Operarios, Jefes, Vendedores y Gerencia. El administrador de la página es un acceso de gestión independiente.
 
 ## Ejecutar en Git Bash
 
@@ -21,12 +21,16 @@ La aplicación lee y guarda videos, secciones, configuración y permisos únicam
 
 ## Funciones incluidas
 
-El selector «Visible para» de documentos permite marcar varios roles y confirmar con «Aplicar», tanto al subir como al editar. Los administradores conservan acceso automático. Para activar el guardado múltiple en una base existente, aplica `supabase/migrations/20261020140818_document_multiple_audiences.sql` en el SQL Editor del proyecto configurado; conserva los documentos y sus permisos actuales y actualiza también el acceso a los archivos privados.
+Los selectores «Visible para» muestran únicamente los cinco roles de contenido. «Administradores» se puede marcar y desmarcar y no concede gestión de la página. El acceso de gestión conserva el identificador interno `admin`; el nuevo rol de contenido utiliza `administrator` y empieza sin asignaciones. No se cambian automáticamente las cuentas existentes. Para actualizar una base existente, ejecuta `npm run prepare:content-administrator-sql` y aplica `outputs/activate-content-administrator.sql` en el SQL Editor del proyecto configurado, después de las migraciones operativas anteriores. Ese archivo incluye la selección múltiple de documentos y conserva las cuentas y los permisos actuales.
+
+La subida admite seleccionar varios archivos a la vez, con título independiente y límite de 25 MB por archivo. Los archivos confirmados aparecen al terminar cada subida; si alguno falla, queda en la lista con su error para reintentarlo sin duplicar los que ya se guardaron.
+
+Si una subida muestra `new row violates row-level security policy` en una sección que también contiene videos, ejecuta `outputs/repair-document-uploads.sql` en el SQL Editor de Supabase. Reemplaza la regla antigua que exigía una sección exclusiva de documentos; conserva RLS, los usuarios y los roles. La subida sigue limitada al administrador de la página, su organización y las secciones activas.
 
 - Login con usuario y contraseña individuales por persona (Supabase Auth valida la contraseña).
-- Panel de administración para crear, editar y deshabilitar cuentas con cualquiera de los cinco roles. La cuenta del administrador conectado está protegida contra cambios desde este panel.
+- Panel de administración para crear, editar y deshabilitar cuentas de contenido o gestión. La cuenta del administrador conectado está protegida contra cambios desde este panel.
 - Opciones y filtros para los cinco roles en usuarios, contenido, vista previa, progreso y cuestionarios.
-- Acceso total automático de Administradores y permisos independientes para Operarios, Jefes, Vendedores y Gerencia.
+- Acceso de gestión independiente del rol Administradores. Los cinco roles de contenido necesitan permisos de sección y asignaciones de videos o documentos.
 - Asignación de cada video a un rol y una sección específicos.
 - Reproducción integrada de YouTube, Google Drive, Vimeo, Loom y archivos directos MP4/WebM/Ogg.
 - Título, descripción, duración y opción de contenido destacado.
@@ -35,7 +39,7 @@ El selector «Visible para» de documentos permite marcar varios roles y confirm
 - Configuración general de identidad, bienvenida, ayuda y modo claro.
 - Guardado automático transaccional y versionado en Supabase, con lectura al iniciar y al volver a enfocar la página.
 - Vista previa de permisos por rol.
-- Contenido exclusivo para Administradores y reporte Excel de los usuarios filtrados con el rol en sus cuatro hojas.
+- Contenido por rol y reporte Excel de los usuarios filtrados con el rol en sus cuatro hojas.
 - Tema negro/dorado y modo claro.
 - Diseño responsive para escritorio, tablet y móvil.
 

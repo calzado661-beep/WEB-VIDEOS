@@ -128,7 +128,7 @@ const SECTION_ICON_OPTIONS = [
 const AUDIENCE_META = {
   ...Object.fromEntries(VIEWER_ROLES.map((role) => [role, { label: ROLE_META[role].label, groupLabel: ROLE_META[role].label, description: `Videos exclusivos para ${ROLE_META[role].label}` }])),
   both: { label: 'Varios roles', groupLabel: 'Varios roles', description: 'Videos compartidos entre dos o más roles' },
-  none: { label: 'Solo Administradores', groupLabel: 'Solo Administradores', description: 'Videos reservados a administración, sin acceso para otros roles' },
+  none: { label: 'Solo gestión de la página', groupLabel: 'Solo gestión de la página', description: 'Videos reservados a administración, sin acceso para otros roles' },
 }
 
 const isVideoLockedFor = isVideoLockedForRole
@@ -1021,7 +1021,7 @@ function AdminApp({
     videos: ['Biblioteca de videos', 'Publica contenido y decide quién puede verlo.'],
     documents: ['Biblioteca de documentos', 'Sube y administra archivos PDF o Word por sección.'],
     settings: ['Configuración general', 'Personaliza los textos y preferencias de la plataforma.'],
-    users: ['Usuarios', 'Crea, edita y deshabilita cuentas con los cinco roles disponibles.'],
+    users: ['Usuarios', 'Crea, edita y deshabilita cuentas con los roles de contenido y el acceso de gestión de la página.'],
     progress: ['Progreso de usuarios', 'Qué tanto ha avanzado cada persona en su contenido asignado.'],
     preview: ['Vista por rol', 'Comprueba la experiencia antes de compartirla.'],
   }
@@ -1159,7 +1159,7 @@ function AdminOverview({ data, onNavigate }) {
   const stats = [
     { label: 'Videos publicados', value: data.videos.length, note: 'en la biblioteca', icon: Play, tone: 'red' },
     { label: 'Secciones activas', value: data.sections.length, note: 'entre todos los roles', icon: Layers3, tone: 'blue' },
-    { label: 'Roles de usuarios', value: USER_ROLES.length, note: 'Administradores y cuatro roles de contenido', icon: UsersRound, tone: 'green' },
+    { label: 'Roles de usuarios', value: USER_ROLES.length, note: 'Cinco roles de contenido y gestión de la página', icon: UsersRound, tone: 'green' },
     { label: 'Asignaciones por rol', value: roleStats.filter((item) => !hasFullContentAccess(item.role)).reduce((sum, item) => sum + item.total, 0), note: 'videos con una sección visible', icon: BriefcaseBusiness, tone: 'violet' },
   ]
 
@@ -1276,7 +1276,7 @@ function SectionsManager({ data, setData, saveState, onRemove, onNotify, onManag
     <div className="manager-stack">
       <section className="panel manager-panel">
         <div className="manager-toolbar">
-          <div><h2>Menú de navegación</h2><p>Los administradores siempre tienen acceso. Activa los demás roles que correspondan.</p></div>
+          <div><h2>Menú de navegación</h2><p>Marca los roles que podrán ver cada sección. Administradores es un rol de contenido, sin permisos de gestión.</p></div>
           <button className="primary-button" onClick={() => setAdding((value) => !value)}>{adding ? <X size={17} /> : <Plus size={17} />} {adding ? 'Cancelar' : 'Nueva sección'}</button>
         </div>
 
@@ -1284,7 +1284,7 @@ function SectionsManager({ data, setData, saveState, onRemove, onNotify, onManag
           <form className="inline-form" onSubmit={addSection}>
             <div className="form-group grow"><label>Nombre de la sección</label><input value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} placeholder="Ej. Recursos humanos" autoFocus /></div>
             <div className="form-group"><label>Icono</label><select value={draft.icon} onChange={(event) => setDraft({ ...draft, icon: event.target.value })}>{SECTION_ICON_OPTIONS.map((icon) => <option value={icon.value} key={icon.value}>{icon.label}</option>)}</select></div>
-            <div className="form-group"><label>Visible para</label><div className="role-checks">{USER_ROLES.map((role) => <button type="button" className={hasFullContentAccess(role) || draft.roles.includes(role) ? 'selected' : ''} disabled={hasFullContentAccess(role)} title={hasFullContentAccess(role) ? 'Acceso total automático' : undefined} key={role} onClick={() => setDraft({ ...draft, roles: draft.roles.includes(role) ? draft.roles.filter((item) => item !== role) : [...draft.roles, role] })}><Check size={13} /> {ROLE_META[role].label}</button>)}</div></div>
+            <div className="form-group"><label>Visible para</label><div className="role-checks">{VIEWER_ROLES.map((role) => <button type="button" className={draft.roles.includes(role) ? 'selected' : ''} key={role} onClick={() => setDraft({ ...draft, roles: draft.roles.includes(role) ? draft.roles.filter((item) => item !== role) : [...draft.roles, role] })}><Check size={13} /> {ROLE_META[role].label}</button>)}</div></div>
             <button className="primary-button form-submit" type="submit" disabled={!draft.name.trim()}>Crear</button>
           </form>
         )}
@@ -1298,7 +1298,7 @@ function SectionsManager({ data, setData, saveState, onRemove, onNotify, onManag
             return (
               <div className="section-row" key={section.id}>
                 <div className="section-identity"><span className="section-icon"><Icon size={18} /></span>{editingId === section.id ? <div className="inline-edit"><input value={editingName} onChange={(event) => setEditingName(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') saveName(section.id) }} autoFocus /><button onClick={() => saveName(section.id)}><Check size={15} /></button></div> : <div><strong>{section.name}</strong><small>/{section.id.split('-').slice(0, -1).join('-') || section.id}</small></div>}</div>
-                <div className="role-toggles">{USER_ROLES.map((role) => <button className={hasFullContentAccess(role) || section.roles.includes(role) ? 'on' : ''} disabled={hasFullContentAccess(role)} title={hasFullContentAccess(role) ? 'Acceso total automático' : undefined} onClick={() => toggleRole(section.id, role)} key={role}><span>{(hasFullContentAccess(role) || section.roles.includes(role)) && <Check size={11} />}</span>{ROLE_META[role].label}</button>)}</div>
+                <div className="role-toggles">{VIEWER_ROLES.map((role) => <button className={section.roles.includes(role) ? 'on' : ''} aria-pressed={section.roles.includes(role)} onClick={() => toggleRole(section.id, role)} key={role}><span>{section.roles.includes(role) && <Check size={11} />}</span>{ROLE_META[role].label}</button>)}</div>
                 <button type="button" className="section-files-button" onClick={() => { setOpenSectionId(section.id); setActiveTab('videos') }} aria-label={`Ver videos y documentos de ${section.name}`} title="Ver videos y documentos"><Eye size={17} /><span>{count} videos · {documentCount} docs</span></button>
                 <div className="order-buttons"><button disabled={index === 0} onClick={() => move(section.id, -1)}><ChevronLeft size={16} /></button><button disabled={index === sortedSections.length - 1} onClick={() => move(section.id, 1)}><ChevronRight size={16} /></button></div>
                 <div className="row-actions"><button onClick={() => { setEditingId(section.id); setEditingName(section.name) }}><Pencil size={16} /></button><button className="danger" onClick={() => onRemove(section.id)}><Trash2 size={16} /></button></div>
@@ -1412,7 +1412,7 @@ function VideosManager({ data, setData, saveState, persistedVideoIdsRef, onNotif
     }
     const enabledRoles = USER_ROLES.filter((role) => draft[`${role}Enabled`])
     if (enabledRoles.some((role) => !data.sections.some((section) => section.id === draft[`${role}Section`]))) {
-      setError('Selecciona una sección para cada rol habilitado. Administradores necesita una sección de referencia para organizar el video.')
+      setError('Selecciona una sección para cada rol habilitado.')
       return
     }
     const assignments = {}
@@ -1525,8 +1525,7 @@ function VideosManager({ data, setData, saveState, persistedVideoIdsRef, onNotif
             </div>
             <div className="assignment-box">
               <div><h3>Permisos y ubicación</h3><p>Elige exactamente quién lo verá y dónde aparecerá.</p></div>
-              {USER_ROLES.map((role) => {
-                if (hasFullContentAccess(role)) return <div className="assignment-card enabled" key={role}><AdminAccessNotice /><div className="form-group"><label>Sección de referencia</label><select value={draft[`${role}Section`]} onChange={(event) => setDraft({ ...draft, [`${role}Section`]: event.target.value })}><option value="">Seleccionar…</option>{sectionsFor(role).map((section) => <option value={section.id} key={section.id}>{section.name}</option>)}</select><small>Organiza el video en esta sección. Administradores conserva acceso a toda la biblioteca.</small></div></div>
+              {VIEWER_ROLES.map((role) => {
                 const enabledKey = `${role}Enabled`
                 const sectionKey = `${role}Section`
                 const lockedKey = `${role}Locked`
@@ -1979,7 +1978,7 @@ function UsersManager({ onCreateUser, onUpdateUser, onNotify }) {
               </div>
             </div>
           ))}
-          {!loading && !loadError && !users.length && <EmptyState icon={UsersRound} title="Aún no hay usuarios" text="Crea una cuenta y asígnale uno de los cinco roles." />}
+          {!loading && !loadError && !users.length && <EmptyState icon={UsersRound} title="Aún no hay usuarios" text="Crea una cuenta y asígnale un rol." />}
           {!loading && !loadError && users.length > 0 && !filteredUsers.length && <EmptyState icon={Search} title="No encontramos usuarios" text="Prueba otra búsqueda o cambia los filtros." />}
         </div>
       </section>
@@ -2131,7 +2130,7 @@ function ProgressManager({ data }) {
     <div className="manager-stack">
       <section className="panel manager-panel">
         <div className="manager-toolbar">
-          <div><h2>Progreso por usuario</h2><p>Consulta los cinco roles. El avance usa los videos asignados, incluidos los bloqueados; Administradores tiene acceso total.</p></div>
+          <div><h2>Progreso por usuario</h2><p>Consulta el avance de cada rol en sus videos asignados, incluidos los bloqueados. El administrador de la página conserva acceso total.</p></div>
           <button className="secondary-button" type="button" onClick={exportExcel} disabled={exporting || loading || Boolean(loadError) || !visibleUsers.length}><Download size={15} /> {exporting ? 'Generando…' : 'Exportar usuarios filtrados'}</button>
         </div>
         {exportError && <p className="form-error access-error">{exportError}</p>}

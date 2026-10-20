@@ -688,10 +688,22 @@ export async function uploadSectionDocument({ organizationId, sectionId, title, 
     .replace(/^-+|-+$/g, '')
     .slice(-180) || 'documento'
   const storageObjectPath = `${organizationId}/${sectionId}/${id}/${safeFileName}`
+  const context = await getCurrentAccessContext()
+  if (context.role !== 'admin' || context.organizationId !== organizationId) {
+    throw new VideoHubApiError('Solo el administrador de la página puede subir documentos a su organización.', {
+      code: 'DOCUMENT_UPLOAD_FORBIDDEN',
+    })
+  }
   const client = getClient()
   const { error: uploadError } = await client.storage
     .from(DOCUMENTS_BUCKET)
     .upload(storageObjectPath, file, { contentType: mimeType, upsert: false })
+  if (uploadError && /row.level.security|violates.*policy/i.test(uploadError.message || '')) {
+    throw new VideoHubApiError('Supabase rechazó la subida. Es necesario actualizar los permisos de almacenamiento de documentos.', {
+      code: 'DOCUMENT_STORAGE_POLICY_DENIED',
+      cause: uploadError,
+    })
+  }
   throwDatabaseError(uploadError, 'No se pudo subir el documento')
 
   const { data, error } = await client

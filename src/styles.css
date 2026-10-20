@@ -658,6 +658,12 @@ button { cursor: pointer; }
 .quiz-attempt-filters .quiz-attempt-search { flex: 1 1 180px; width: auto; }
 .document-upload-form .form-group { min-width: 0; }
 .document-audience-select { min-width: 0; width: 100%; min-height: 38px; display: inline-flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 10px; color: var(--text); border: 1px solid var(--border-strong); border-radius: 7px; background: var(--surface); font: inherit; text-align: left; cursor: pointer; }
+.document-upload-queue { grid-column: 1 / -1; display: grid; gap: 10px; }
+.document-upload-queue__item { display: flex; align-items: center; gap: 12px; padding: 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-2); }
+.document-upload-queue__item > div { flex: 1; min-width: 0; }
+.document-upload-queue__item span, .document-upload-queue__item label { display: block; margin-bottom: 6px; color: var(--muted); font-size: 11px; overflow-wrap: anywhere; }
+.document-upload-queue__item input { box-sizing: border-box; width: 100%; padding: 8px; color: var(--text); border: 1px solid var(--border-strong); border-radius: 5px; background: var(--surface); }
+.document-upload-queue__item .form-error { display: block; margin-top: 6px; }
 .document-audience-select span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .document-audience-select svg { flex-shrink: 0; }
 .document-audience-select:focus-visible { outline: 2px solid var(--gold); outline-offset: 2px; }

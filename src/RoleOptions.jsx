@@ -1,7 +1,7 @@
 import { DOCUMENT_AUDIENCE_LABELS, DOCUMENT_AUDIENCES, ROLE_META, USER_ROLES } from './data.js'
 
-export function RoleOptions() {
-  return USER_ROLES.map((role) => <option value={role} key={role}>{ROLE_META[role].label}</option>)
+export function RoleOptions({ roles = USER_ROLES }) {
+  return roles.map((role) => <option value={role} key={role}>{ROLE_META[role].label}</option>)
 }
 
 export function DocumentAudienceOptions() {

@@ -86,7 +86,7 @@ const requiredRpcChecks = [
 
 // A table can exist while its enum is still missing values expected by the app.
 // Read-only probes also work when no users have been assigned the new roles yet.
-for (const role of ['salesperson', 'management']) {
+for (const role of USER_ROLES.filter((role) => role !== 'admin')) {
   try {
     const response = await fetch(`${projectUrl}/rest/v1/profiles?select=user_id&role=eq.${role}&limit=0`, {
       headers: { apikey: secretKey },
@@ -114,14 +114,14 @@ try {
     body: '{}', signal: AbortSignal.timeout(15_000),
   })
   const configuration = await response.json().catch(() => ({}))
-  if (configuration?.code === 'PGRST202' || (response.ok && (configuration?.version !== 3 || !USER_ROLES.every((role) => configuration?.userRoles?.includes(role))))) {
-    console.log('PENDIENTE · Configuración completa de los cinco roles · Aplica operational_roles_consistency.')
+  if (configuration?.code === 'PGRST202' || (response.ok && (configuration?.version !== 4 || !USER_ROLES.every((role) => configuration?.userRoles?.includes(role))))) {
+    console.log('PENDIENTE · Separación de roles de contenido y gestión · Aplica content_administrator_permissions.')
     migrationsPending = true
   } else if (!response.ok) {
     console.log(`ERROR · Configuración de roles · HTTP ${response.status}`)
     failed = true
   } else {
-    console.log('OK · Configuración completa de los cinco roles')
+    console.log('OK · Cinco roles de contenido y administrador de la página separados')
   }
 } catch (error) {
   console.log(`ERROR · Configuración de roles · ${error.name}`)

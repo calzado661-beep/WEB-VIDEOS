@@ -88,8 +88,8 @@ test('rechaza roles fuera del catálogo antes de modificar Auth o perfiles', asy
   assert.equal(writes.length, 0)
 })
 
-test('los roles de contenido no pueden crear usuarios ni elevar permisos', async (t) => {
-  const writes = mockSupabase(t, { callerRole: 'management' })
+test('Administradores de contenido no puede crear usuarios ni elevar permisos', async (t) => {
+  const writes = mockSupabase(t, { callerRole: 'administrator' })
   assert.equal((await createUser(request({ ...userDraft, role: 'admin' }))).status, 403)
   assert.equal((await updateUser(request({ userId: targetId, role: 'admin' }))).status, 403)
   assert.equal(writes.length, 0)
@@ -111,7 +111,7 @@ test('una cuenta deshabilitada no administra usuarios aunque tenga rol admin', a
 
 test('una migración pendiente no crea cuentas ni cambia contraseñas parcialmente', async (t) => {
   const writes = mockSupabase(t, { installedRoles: ['admin', 'operator', 'boss'] })
-  for (const role of ['salesperson', 'management']) {
+  for (const role of ['salesperson', 'management', 'administrator']) {
     const created = await createUser(request({ ...userDraft, role }))
     assert.equal(created.status, 409)
     assert.equal((await created.json()).code, 'ROLE_SCHEMA_PENDING')

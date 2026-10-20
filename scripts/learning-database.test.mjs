@@ -41,6 +41,9 @@ test('secuencias e intentos en PostgreSQL', async (t) => {
     '20261019202600_operational_role_permissions.sql',
     '20261019222833_operational_roles_consistency.sql',
     '20261020140818_document_multiple_audiences.sql',
+    '20261020161159_content_administrator_role_value.sql',
+    '20261020161224_content_administrator_permissions.sql',
+    '20261020162833_repair_document_upload_policy.sql',
   ]
   for (const name of migrations) {
     const sql = (await readFile(new URL('../supabase/migrations/' + name, import.meta.url), 'utf8'))
@@ -90,25 +93,91 @@ test('secuencias e intentos en PostgreSQL', async (t) => {
     try { await fn() } finally { await db.exec('rollback; reset role') }
   })
 
+  await subtest('una política antigua rechaza la subida en secciones mixtas y la reparación la permite', async () => {
+    const legacy = await readFile(new URL('../supabase/migrations/20260909193654_section_documents.sql', import.meta.url), 'utf8')
+    const oldPathRule = legacy.match(/create or replace function private\.can_admin_document_path\(p_object_name text\)[\s\S]*?\$\$;/)[0]
+    await db.exec(oldPathRule)
+    const path = `${org}/${section}/${id(96)}/test.pdf`
+    await asUser(admin)
+    assert.equal((await query('select private.can_admin_document_path($1) as allowed', [path]))[0].allowed, false)
+    await rejects("insert into storage.objects(bucket_id,name) values ('document-assets',$1)", [path], /row-level security/)
+    await db.exec('reset role')
+    const repair = (await readFile(new URL('../supabase/migrations/20261020162833_repair_document_upload_policy.sql', import.meta.url), 'utf8')).replace(/^begin;\s*/, '').replace(/commit;\s*$/, '')
+    await db.exec(repair)
+    await db.exec(repair)
+    await asUser(admin)
+    assert.equal((await query('select private.can_admin_document_path($1) as allowed', [path]))[0].allowed, true)
+    await query("insert into storage.objects(bucket_id,name) values ('document-assets',$1)", [path])
+    await query(`insert into public.section_documents(organization_id,section_id,title,file_name,mime_type,file_size,storage_object_path)
+      values ($1,$2,'Documento mixto','test.pdf','application/pdf',10,$3)`, [org, section, path])
+    assert.equal((await query('select id from public.section_documents')).length, 1)
+    assert.equal((await query('select id from storage.objects where name=$1', [path])).length, 1)
+    await asUser(alice)
+    await rejects("insert into storage.objects(bucket_id,name) values ('document-assets',$1)", [`${org}/${section}/${id(97)}/no.pdf`], /row-level security/)
+    await asUser(outsider)
+    await rejects("insert into storage.objects(bucket_id,name) values ('document-assets',$1)", [`${org}/${section}/${id(98)}/no.pdf`], /row-level security/)
+    await asUser(admin)
+    for (const invalid of ['bad/path/test.pdf', `${org}/${id(999)}/missing.pdf`, `${id(8)}/${section}/wrong-org.pdf`]) {
+      assert.equal((await query('select private.can_admin_document_path($1) as allowed', [invalid]))[0].allowed, false)
+    }
+    await db.exec('reset role')
+    await query('update public.sections set active=false where id=$1', [section])
+    await asUser(admin)
+    await rejects("insert into storage.objects(bucket_id,name) values ('document-assets',$1)", [`${org}/${section}/${id(99)}/hidden.pdf`], /row-level security/)
+  })
+
   await subtest('los cinco roles coinciden con el catálogo y los nuevos no heredan acceso', async () => {
     const roles = await query("select unnest(enum_range(null::public.app_role))::text as role")
     assert.deepEqual(roles.map((row) => row.role), USER_ROLES)
     const sectionRoles = await query('select role::text,visible from public.section_roles where section_id=$1 order by role', [section])
     assert.equal(sectionRoles.length, USER_ROLES.length)
-    assert.ok(sectionRoles.filter((row) => ['salesperson', 'management'].includes(row.role)).every((row) => !row.visible))
+    assert.ok(sectionRoles.filter((row) => ['salesperson', 'management', 'administrator'].includes(row.role)).every((row) => !row.visible))
     assert.equal(sectionRoles.find((row) => row.role === 'admin').visible, true)
     await rejects("update public.section_roles set visible=false where section_id=$1 and role='admin'", [section], /check constraint/)
     await asUser(admin)
     const configuration = (await query('select public.get_role_configuration() as value'))[0].value
-    assert.equal(configuration.version, 3)
+    assert.equal(configuration.version, 4)
     assert.deepEqual(configuration.userRoles, USER_ROLES)
     await db.exec('set role service_role')
-    assert.equal((await query('select public.get_role_configuration() as value'))[0].value.version, 3)
+    assert.equal((await query('select public.get_role_configuration() as value'))[0].value.version, 4)
     await db.exec('set role anon')
     await rejects('select public.get_role_configuration()', [], /permission denied/)
   })
 
-  await subtest('los documentos reservados a Administradores quedan protegidos también en Storage', async () => {
+  await subtest('Administradores de contenido obedece RLS y no obtiene gestión de la página', async () => {
+    const path = `${org}/${section}/content-administrator.pdf`
+    await query("update public.profiles set role='administrator' where user_id=$1", [alice])
+    await asUser(alice)
+    assert.equal((await query('select id from public.sections where id=$1', [section])).length, 0)
+    assert.equal((await query('select private.is_admin_for($1) as allowed', [org]))[0].allowed, false)
+    await rejects('select public.save_admin_snapshot($1,$2)', ['{}', 0], /Administrator access required/)
+    await rejects('select public.admin_grant_quiz_attempt($1,$2)', [first, alice], /No autorizado/)
+    await db.exec('reset role')
+    await query("update public.section_roles set visible=true where section_id=$1 and role='administrator'", [section])
+    await query("insert into public.video_assignments(video_id,organization_id,role,section_id,is_locked) values ($1,$2,'administrator',$3,true)", [first, org, section])
+    await query(`insert into public.section_documents(organization_id,section_id,title,file_name,mime_type,file_size,storage_object_path,audience)
+      values ($1,$2,'Normal','normal.pdf','application/pdf',10,$3,'administrator')`, [org, section, path])
+    await query("insert into storage.objects(bucket_id,name) values ('document-assets',$1)", [path])
+    await asUser(alice)
+    assert.equal((await query('select id from public.sections where id=$1', [section])).length, 1)
+    assert.equal((await query('select id from public.videos where id=$1', [first])).length, 1)
+    assert.equal(await playable(first), false)
+    assert.equal((await query('select id from public.section_documents')).length, 1)
+    assert.equal((await query('select id from storage.objects where name=$1', [path])).length, 1)
+    assert.equal((await query("update public.sections set name='No permitido' where id=$1 returning id", [section])).length, 0)
+    await db.exec('reset role')
+    await query("update public.video_assignments set is_locked=false where video_id=$1 and role='administrator'", [first])
+    await asUser(alice)
+    assert.equal(await playable(first), true)
+    await db.exec('reset role')
+    await query("update public.section_roles set visible=false where section_id=$1 and role='administrator'", [section])
+    await asUser(alice)
+    assert.equal(await playable(first), false)
+    assert.equal((await query('select id from public.section_documents')).length, 0)
+    assert.equal((await query('select id from storage.objects where name=$1', [path])).length, 0)
+  })
+
+  await subtest('los documentos reservados a la gestión de la página quedan protegidos también en Storage', async () => {
     const path = `${org}/${section}/admin-only.pdf`
     await query("update public.section_roles set visible=true where section_id=$1", [section])
     await query(`insert into public.section_documents(organization_id,section_id,title,file_name,mime_type,file_size,storage_object_path,audience)

@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react'
 import { getDocumentAudienceLabel } from './documentAudience.js'
 import DocumentAudienceSelect from './DocumentAudienceSelect'
+import { createDocumentUploads, uploadDocumentBatch } from './documentUploads.js'
+import { VIEWER_ROLES } from './data.js'
 import { AdminAccessNotice, RoleOptions } from './RoleOptions'
 import { canViewDocument, normalizeSearch } from './roleAccess.js'
 import { Check, FileText, Pencil, Search, ShieldCheck, Trash2, UploadCloud, X } from 'lucide-react'
@@ -26,8 +28,9 @@ function EmptyDocuments({ title, text }) {
 export default function DocumentsManager({ data, setData, onNotify, sectionId = null, uploadsEnabled = true }) {
   const documentSections = [...data.sections]
     .sort((a, b) => a.order - b.order)
-  const [draft, setDraft] = useState({ title: '', sectionId: sectionId || documentSections[0]?.id || '', audience: 'both', file: null })
+  const [draft, setDraft] = useState({ sectionId: sectionId || documentSections[0]?.id || '', audience: 'both', files: [] })
   const [uploading, setUploading] = useState(false)
+  const [uploadProgress, setUploadProgress] = useState('')
   const [editingId, setEditingId] = useState(null)
   const [editingTitle, setEditingTitle] = useState('')
   const [busyId, setBusyId] = useState(null)
@@ -44,24 +47,33 @@ export default function DocumentsManager({ data, setData, onNotify, sectionId = 
 
   const submitDocument = async (event) => {
     event.preventDefault()
-    if (!uploadsEnabled || !draft.title.trim() || !(sectionId || draft.sectionId) || !draft.file || uploading) return
+    if (!uploadsEnabled || !(sectionId || draft.sectionId) || !draft.files.length || draft.files.some((entry) => !entry.title.trim()) || uploading) return
     setUploading(true)
     try {
-      const document = await uploadSectionDocument({
-        organizationId: data.organizationId,
-        sectionId: sectionId || draft.sectionId,
-        title: draft.title,
-        audience: draft.audience,
-        file: draft.file,
+      const { failed, uploadedCount } = await uploadDocumentBatch({
+        entries: draft.files,
+        upload: ({ file, title }) => uploadSectionDocument({
+          organizationId: data.organizationId,
+          sectionId: sectionId || draft.sectionId,
+          title,
+          audience: draft.audience,
+          file,
+        }),
+        onUploaded: (document) => setData((current) => ({ ...current, documents: [document, ...(current.documents || [])] })),
+        onProgress: (current, total) => setUploadProgress(`${current} de ${total}`),
       })
-      setData((current) => ({ ...current, documents: [document, ...(current.documents || [])] }))
-      setDraft((current) => ({ ...current, title: '', file: null }))
+      setDraft((current) => ({ ...current, files: failed }))
       setFileInputKey((value) => value + 1)
-      onNotify?.('Documento “' + document.title + '” guardado correctamente.')
+      if (failed.length) {
+        onNotify?.(`${uploadedCount} guardado(s); ${failed.length} pendiente(s). Revisa los archivos indicados y vuelve a intentar.`, { tone: 'danger' })
+      } else {
+        onNotify?.(`${uploadedCount} documento${uploadedCount === 1 ? '' : 's'} guardado${uploadedCount === 1 ? '' : 's'} correctamente.`)
+      }
     } catch (error) {
       onNotify?.(errorMessage(error, 'No se pudo guardar el documento.'), { tone: 'danger' })
     } finally {
       setUploading(false)
+      setUploadProgress('')
     }
   }
 
@@ -130,14 +142,23 @@ export default function DocumentsManager({ data, setData, onNotify, sectionId = 
   return (
     <div className="manager-stack">
       <section className="panel document-upload-panel">
-        <div className="manager-toolbar"><div><h2>Subir un documento</h2><p>Archivos PDF, DOC o DOCX de hasta 25 MB.</p></div><span className="document-security-badge"><ShieldCheck size={15} /> Almacenamiento privado</span></div>
+        <div className="manager-toolbar"><div><h2>Subir documentos</h2><p>Selecciona varios archivos PDF, DOC o DOCX. Máximo 25 MB por archivo.</p></div><span className="document-security-badge"><ShieldCheck size={15} /> Almacenamiento privado</span></div>
         {documentSections.length ? (
           <form className="document-upload-form" onSubmit={submitDocument}>
-            <div className="form-group"><label>Título visible</label><input value={draft.title} onChange={(event) => setDraft({ ...draft, title: event.target.value })} maxLength="180" placeholder="Ej. Manual de seguridad" /></div>
-            {!sectionId && <div className="form-group"><label>Sección</label><select value={draft.sectionId} onChange={(event) => setDraft({ ...draft, sectionId: event.target.value })}>{documentSections.map((section) => <option value={section.id} key={section.id}>{section.name}</option>)}</select></div>}
-            <div className="form-group"><label htmlFor="document-audience">Visible para</label><DocumentAudienceSelect id="document-audience" value={draft.audience} onChange={(audience) => setDraft((current) => ({ ...current, audience }))} disabled={uploading} /><small>Los administradores siempre tienen acceso. Los demás roles también necesitan tener visible la sección.</small></div>
-            <div className="form-group document-file-field"><label>Archivo</label><input key={fileInputKey} type="file" accept=".pdf,.doc,.docx,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document" onChange={(event) => setDraft({ ...draft, file: event.target.files?.[0] || null })} /></div>
-            <button className="primary-button" type="submit" disabled={!uploadsEnabled || uploading || !draft.title.trim() || !(sectionId || draft.sectionId) || !draft.file}>{uploading ? null : <UploadCloud size={17} />}{uploading ? 'Subiendo…' : uploadsEnabled ? 'Guardar documento' : 'Esperando guardado…'}</button>
+            {!sectionId && <div className="form-group"><label>Sección</label><select value={draft.sectionId} disabled={uploading} onChange={(event) => setDraft({ ...draft, sectionId: event.target.value })}>{documentSections.map((section) => <option value={section.id} key={section.id}>{section.name}</option>)}</select></div>}
+            <div className="form-group"><label htmlFor="document-audience">Visible para</label><DocumentAudienceSelect id="document-audience" value={draft.audience} onChange={(audience) => setDraft((current) => ({ ...current, audience }))} disabled={uploading} /><small>Los roles seleccionados también necesitan tener visible la sección. El rol Administradores solo permite consultar contenido.</small></div>
+            <div className="form-group document-file-field"><label htmlFor="document-files">Archivos</label><input id="document-files" key={fileInputKey} type="file" multiple disabled={uploading} accept=".pdf,.doc,.docx,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document" onChange={(event) => {
+              const entries = createDocumentUploads(event.target.files || [])
+              setDraft((current) => ({ ...current, files: [...current.files, ...entries] }))
+              setFileInputKey((value) => value + 1)
+            }} /></div>
+            <button className="primary-button" type="submit" disabled={!uploadsEnabled || uploading || !(sectionId || draft.sectionId) || !draft.files.length || draft.files.some((entry) => !entry.title.trim())}>{uploading ? null : <UploadCloud size={17} />}{uploading ? `Subiendo ${uploadProgress}…` : uploadsEnabled ? `Guardar documentos${draft.files.length ? ` (${draft.files.length})` : ''}` : 'Esperando guardado…'}</button>
+            {draft.files.length > 0 && <div className="document-upload-queue" aria-live="polite">
+              {draft.files.map((entry, index) => <div className="document-upload-queue__item" key={index}>
+                <div><span>{entry.file.name} · {formatFileSize(entry.file.size)}</span><label htmlFor={`document-title-${index}`}>Título visible</label><input id={`document-title-${index}`} value={entry.title} maxLength={180} disabled={uploading} onChange={(event) => setDraft((current) => ({ ...current, files: current.files.map((item, itemIndex) => itemIndex === index ? { ...item, title: event.target.value } : item) }))} />{entry.error && <small className="form-error">{entry.error}</small>}</div>
+                <button type="button" className="secondary-button" disabled={uploading} aria-label={`Quitar ${entry.file.name}`} onClick={() => setDraft((current) => ({ ...current, files: current.files.filter((_, itemIndex) => itemIndex !== index) }))}><X size={16} /></button>
+              </div>)}
+            </div>}
           </form>
         ) : <EmptyDocuments title="Crea una sección" text="Crea una sección para poder publicar documentos." />}
       </section>
@@ -146,7 +167,7 @@ export default function DocumentsManager({ data, setData, onNotify, sectionId = 
 
       <section className="panel document-library-panel">
         <div className="panel-heading"><div><h2>Documentos publicados</h2><p>Cambia el título o los roles, o elimina archivos. La sección también debe estar visible para los roles seleccionados.</p></div><span className="count-chip">{documents.length} archivo{documents.length === 1 ? '' : 's'}</span></div>
-        <div className="progress-filters"><label className="search-field progress-filters__search"><Search size={16} /><input type="search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Buscar documento…" aria-label="Buscar documento" /></label><label className="progress-filters__select"><span>Acceso por rol</span><select value={roleFilter} onChange={(event) => setRoleFilter(event.target.value)}><option value="all">Todos los roles</option><RoleOptions /></select></label></div>
+        <div className="progress-filters"><label className="search-field progress-filters__search"><Search size={16} /><input type="search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Buscar documento…" aria-label="Buscar documento" /></label><label className="progress-filters__select"><span>Acceso por rol</span><select value={roleFilter} onChange={(event) => setRoleFilter(event.target.value)}><option value="all">Todos los roles</option><RoleOptions roles={VIEWER_ROLES} /></select></label></div>
         <div className="document-admin-grid">
           {documents.map((document) => {
             const section = data.sections.find((item) => item.id === document.sectionId)

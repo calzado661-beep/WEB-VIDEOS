@@ -75,7 +75,7 @@ export default function DocumentAudienceSelect({ id, value = 'both', onChange, d
       <strong>Selecciona los roles</strong>
       <label><input type="checkbox" checked={selection === 'both'} disabled={saving} onChange={(event) => setSelection(event.target.checked ? 'both' : 'admin')} />Todos los roles de la sección</label>
       {VIEWER_ROLES.map((role) => <label key={role}><input type="checkbox" checked={roles.includes(role)} disabled={saving} onChange={() => setSelection((current) => toggleDocumentAudienceRole(current, role))} />{ROLE_META[role].label}</label>)}
-      <label className="document-audience-popup__admin"><input type="checkbox" checked disabled />Administradores <small>Acceso automático</small></label>
+      <p className="document-audience-popup__admin">Sin roles seleccionados, el documento queda disponible solo en gestión.</p>
       <div className="document-audience-popup__actions"><button type="button" disabled={saving} onClick={close}>Cancelar</button><button type="button" className="primary-button" disabled={saving} onClick={apply}>{saving ? 'Guardando…' : 'Aplicar'}</button></div>
     </div>, document.body)}
   </>
